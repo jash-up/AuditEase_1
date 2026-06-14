@@ -1,0 +1,4 @@
+node_modules/
+backend/storage/vault/
+*.db
+.env
