@@ -321,20 +321,37 @@ router.post('/:id/edit', requireAuth, upload.single('file'), async (req, res) =>
 // ── PATCH /api/documents/:id/status ─────────────────────────────────────────
 router.patch('/:id/status', requireAuth, (req, res) => {
   try {
+    const { id } = req.params;
     const { status } = req.body;
-    if (!status || !VALID_STATUSES.includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
+
+    const validStatuses = ['Uploaded', 'Pending Approval', 'Action Required', 'Verified', 'Submitted', 'Overdue'];
+
+    if (!status) {
+      return res.status(400).json({ error: 'Status is required.' });
     }
 
-    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(req.params.id);
-    if (!doc) return res.status(404).json({ error: 'Document not found' });
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+    }
 
-    db.prepare('UPDATE documents SET status = ? WHERE id = ?').run(status, req.params.id);
-    const updated = db.prepare('SELECT * FROM documents WHERE id = ?').get(req.params.id);
-    res.json(updated);
+    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found.' });
+    }
+
+    if (doc.is_archived) {
+      return res.status(400).json({ error: 'Cannot change status of an archived document. Unarchive it first.' });
+    }
+
+    db.prepare('UPDATE documents SET status = ?, last_uploader_id = ? WHERE id = ?')
+      .run(status, req.user.id, id);
+
+    const updated = db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+    return res.json({ message: 'Status updated successfully.', document: updated });
+
   } catch (err) {
-    console.error('Status update error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('[STATUS UPDATE ERROR]', err);
+    return res.status(500).json({ error: 'Failed to update status.', detail: err.message });
   }
 });
 

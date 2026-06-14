@@ -276,7 +276,7 @@
             </button>
           </div>
           <div class="file-detail-meta">
-            <span class="badge ${STATUS_BADGE_CLASS[doc.status] || ''}">${escHtml(doc.status)}</span>
+            <span class="badge ${STATUS_BADGE_CLASS[doc.status] || ''}" id="file-detail-status-badge">${escHtml(doc.status)}</span>
             <span class="badge" style="background:var(--bg-raised);color:var(--text-secondary);">${escHtml(doc.category)}</span>
             <span class="badge" style="background:var(--bg-raised);color:var(--text-secondary);">${escHtml(doc.subcategory)}</span>
             <span class="mono badge" style="background:var(--bg-raised);color:var(--text-muted);font-size:11px;">v${doc.version}</span>
@@ -427,7 +427,7 @@
     if (btn) btn.addEventListener('click', () => openUploadModal(null));
   }
 
-  function openUploadModal(editDocId) {
+  function openUploadModal(editDocId, doc = null) {
     const isEdit = !!editDocId;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
@@ -446,6 +446,28 @@
           </button>
         </div>
         <div class="modal-body">
+          ${isEdit ? `
+          <!-- Status-only update section -->
+          <div id="edit-status-section" style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid var(--border);">
+            <label style="display:block; font-size:13px; color:var(--text-secondary); margin-bottom:6px;">
+              Change Status
+            </label>
+            <select id="edit-status-select" style="width:100%; padding:8px 10px; border-radius:4px; border:1px solid var(--border); background:var(--bg-surface); color:var(--text-primary); font-size:14px;">
+              <option value="Uploaded">Uploaded</option>
+              <option value="Pending Approval">Pending Approval</option>
+              <option value="Action Required">Action Required</option>
+              <option value="Verified">Verified</option>
+              <option value="Submitted">Submitted</option>
+              <option value="Overdue">Overdue</option>
+            </select>
+            <button type="button" id="edit-status-save-btn"
+              style="margin-top:10px; padding:8px 16px; background:var(--accent); color:#fff; border:none; border-radius:4px; font-size:14px; cursor:pointer;">
+              Update Status
+            </button>
+            <span id="edit-status-feedback" style="display:none; margin-left:10px; font-size:13px;"></span>
+          </div>
+          ` : ''}
+
           ${!isEdit ? `
           <div class="modal-grid-2">
             <div class="form-group">
@@ -483,6 +505,15 @@
             </div>
           </div>
           ` : ''}
+
+          ${isEdit ? `
+          <div id="edit-file-section" style="margin-top: 10px;">
+            <label style="display:block; font-size:13px; color:var(--text-secondary); margin-bottom:6px;">
+              Upload New Version (optional)
+            </label>
+          </div>
+          ` : ''}
+
           <div class="modal-grid-2">
             <div class="form-group">
               <label for="up-status">Status *</label>
@@ -587,6 +618,102 @@
       }
     });
 
+    // Populate and disable if Edit mode
+    if (isEdit && doc) {
+      const statusSelect = document.getElementById('edit-status-select');
+      const upStatusSelect = document.getElementById('up-status');
+      const upDueDate = document.getElementById('up-due-date');
+      const upApprover = document.getElementById('up-approver');
+      const saveBtn = document.getElementById('edit-status-save-btn');
+
+      if (statusSelect) {
+        statusSelect.value = doc.status;
+        if (doc.is_archived) {
+          statusSelect.disabled = true;
+          if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.title = 'Unarchive this document to change its status.';
+          }
+        }
+      }
+
+      if (upStatusSelect) upStatusSelect.value = doc.status;
+      if (upDueDate && doc.due_date) upDueDate.value = doc.due_date.split('T')[0];
+      if (upApprover && doc.approver_id) upApprover.value = doc.approver_id;
+
+      if (toggleBtn && toggleLabel) {
+        isEditable = doc.is_editable === 1 || doc.is_editable === true;
+        toggleBtn.classList.toggle('on', isEditable);
+        toggleBtn.setAttribute('aria-pressed', isEditable);
+        toggleLabel.textContent = isEditable ? 'Yes — users can upload new versions' : 'No — document is locked';
+      }
+
+      if (saveBtn) {
+        saveBtn.dataset.docId = editDocId;
+      }
+    }
+
+    // Wire status-only update button
+    const editStatusSaveBtn = document.getElementById('edit-status-save-btn');
+    if (editStatusSaveBtn) {
+      editStatusSaveBtn.addEventListener('click', async function () {
+        const docId = this.dataset.docId;
+        const newStatus = document.getElementById('edit-status-select').value;
+        const feedbackEl = document.getElementById('edit-status-feedback');
+
+        this.disabled = true;
+        this.textContent = 'Saving…';
+        feedbackEl.style.display = 'none';
+
+        try {
+          const res = await window.AE.apiFetch(`/api/documents/${docId}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: newStatus })
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            feedbackEl.textContent = data.error || 'Failed to update status.';
+            feedbackEl.style.color = 'var(--status-action)';
+            feedbackEl.style.display = 'inline';
+            return;
+          }
+
+          feedbackEl.textContent = '✓ Status updated';
+          feedbackEl.style.color = 'var(--status-verified)';
+          feedbackEl.style.display = 'inline';
+
+          // Update file detail badge if present
+          const detailStatusBadge = document.getElementById('file-detail-status-badge');
+          if (detailStatusBadge) {
+            detailStatusBadge.textContent = newStatus;
+            detailStatusBadge.className = `badge ${STATUS_BADGE_CLASS[newStatus] || ''}`;
+          }
+
+          // Refresh the view
+          await loadSummary();
+          renderCategoryCards();
+          if (activeSelection.category) {
+            loadDocumentPanel(activeSelection.category, activeSelection.status);
+          }
+
+          setTimeout(() => {
+            close();
+          }, 800);
+
+        } catch (err) {
+          feedbackEl.textContent = 'Could not reach server.';
+          feedbackEl.style.color = 'var(--status-action)';
+          feedbackEl.style.display = 'inline';
+          console.error('[STATUS UPDATE ERROR]', err);
+        } finally {
+          this.disabled = false;
+          this.textContent = 'Update Status';
+        }
+      });
+    }
+
     // Submit
     document.getElementById('modal-submit').addEventListener('click', async () => {
       await handleUpload(isEdit ? editDocId : null, isEditable, close);
@@ -594,7 +721,14 @@
   }
 
   async function openEditModal(docId) {
-    openUploadModal(docId);
+    try {
+      const res = await window.AE.apiFetch(`/api/documents/${docId}`);
+      if (!res.ok) return;
+      const doc = await res.json();
+      openUploadModal(docId, doc);
+    } catch (e) {
+      console.error('Failed to open edit modal', e);
+    }
   }
 
   async function handleUpload(editDocId, isEditable, closeFn) {
