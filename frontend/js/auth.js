@@ -82,54 +82,41 @@
     const panel = document.getElementById('account-panel');
     if (!panel) return;
 
+    const loggedInDiv = document.getElementById('panel-logged-in');
+    const loggedOutDiv = document.getElementById('panel-logged-out');
+
     if (user) {
-      panel.innerHTML = `
-        <div class="account-panel-header">
-          <h3>Account</h3>
-          <p>Signed in to AuditEase</p>
-        </div>
-        <div class="account-panel-body">
-          <div class="account-panel-user">
-            <div class="account-panel-avatar">${getInitials(user.name)}</div>
-            <div class="account-panel-user-info">
-              <h4>${escapeHtml(user.name)}</h4>
-              <p>@${escapeHtml(user.username)}</p>
-            </div>
-          </div>
-          <button class="btn btn-ghost w-full" id="signout-btn" style="justify-content:center;">
-            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-            Sign Out
-          </button>
-        </div>
-      `;
-      document.getElementById('signout-btn').addEventListener('click', handleSignOut);
+      // Update logged-in details
+      const avatarEl = document.getElementById('account-avatar');
+      const nameEl = document.getElementById('account-name');
+      const usernameEl = document.getElementById('account-username');
+
+      if (avatarEl) avatarEl.textContent = getInitials(user.name);
+      if (nameEl) nameEl.textContent = user.name;
+      if (usernameEl) usernameEl.textContent = `@${user.username}`;
+
+      if (loggedInDiv) loggedInDiv.style.display = 'block';
+      if (loggedOutDiv) loggedOutDiv.style.display = 'none';
     } else {
-      panel.innerHTML = `
-        <div class="account-panel-header">
-          <h3>Sign In</h3>
-          <p>Access AuditEase</p>
-        </div>
-        <div class="account-panel-body">
-          <div class="form-group">
-            <label for="login-username">Username</label>
-            <input type="text" id="login-username" placeholder="Enter your username" autocomplete="username" />
-          </div>
-          <div class="form-group">
-            <label for="login-password">Password</label>
-            <input type="password" id="login-password" placeholder="Enter your password" autocomplete="current-password" />
-          </div>
-          <p class="login-error" id="login-error"></p>
-          <button class="btn btn-primary" id="login-btn" style="width:100%;justify-content:center;">
-            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-            Sign In
-          </button>
-        </div>
-      `;
-      const loginBtn = document.getElementById('login-btn');
-      const pwInput = document.getElementById('login-password');
-      loginBtn.addEventListener('click', handleLogin);
-      pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin(); });
-      document.getElementById('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') pwInput.focus(); });
+      // Reset login form fields
+      const usernameInput = document.getElementById('login-username');
+      const passwordInput = document.getElementById('login-password');
+      const errorEl = document.getElementById('login-error');
+      const loginBtn = document.getElementById('login-submit-btn');
+
+      if (usernameInput) usernameInput.value = '';
+      if (passwordInput) passwordInput.value = '';
+      if (errorEl) errorEl.textContent = '';
+      if (loginBtn) {
+        loginBtn.disabled = false;
+        loginBtn.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+          Sign In
+        `;
+      }
+
+      if (loggedInDiv) loggedInDiv.style.display = 'none';
+      if (loggedOutDiv) loggedOutDiv.style.display = 'block';
     }
   }
 
@@ -137,7 +124,7 @@
     const username = document.getElementById('login-username').value.trim();
     const password = document.getElementById('login-password').value;
     const errEl = document.getElementById('login-error');
-    const btn = document.getElementById('login-btn');
+    const btn = document.getElementById('login-submit-btn');
 
     if (!username || !password) {
       errEl.textContent = 'Please enter username and password';
@@ -162,12 +149,18 @@
       } else {
         errEl.textContent = data.error || 'Login failed';
         btn.disabled = false;
-        btn.textContent = 'Sign In';
+        btn.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+          Sign In
+        `;
       }
     } catch (e) {
       errEl.textContent = 'Connection error. Please try again.';
       btn.disabled = false;
-      btn.textContent = 'Sign In';
+      btn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+        Sign In
+      `;
     }
   }
 
@@ -237,127 +230,67 @@
 
   // ── Auth guard (for protected pages) ────────────────────────────────
   function showAuthGuard() {
-    // Dim the page content
-    const contentBody = document.querySelector('.page-body') 
-      || document.getElementById('dashboard-body')
-      || document.getElementById('vault-body')
-      || document.getElementById('archives-body');
-
-    if (contentBody) {
-      contentBody.style.filter = 'blur(4px)';
-      contentBody.style.pointerEvents = 'none';
-    }
-
-    // Remove existing overlay if any
-    const existing = document.getElementById('auth-guard-overlay');
-    if (existing) existing.remove();
-
-    let pageName = 'the dashboard';
-    if (window.location.pathname.includes('vault')) {
-      pageName = 'the document vault';
-    } else if (window.location.pathname.includes('archives')) {
-      pageName = 'the archives';
-    }
-
-    // Create overlay
-    const overlay = document.createElement('div');
-    overlay.id = 'auth-guard-overlay';
-    overlay.innerHTML = `
-      <div id="auth-guard-box">
-        <div id="auth-guard-icon">🔒</div>
-        <h2 id="auth-guard-title">Sign in to continue</h2>
-        <p id="auth-guard-subtitle">You need to be signed in to view ${pageName}.</p>
-        <button type="button" id="auth-guard-signin-btn">Sign In</button>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    // Attach button listener — with safety check for topbar panel and debugging logs
-    const guardBtn = document.getElementById('auth-guard-signin-btn');
-    if (guardBtn) {
-      guardBtn.addEventListener('click', () => {
-        console.log('[AuditEase] Auth guard Sign In button clicked');
-        console.log('[AuditEase] account-panel in DOM:', !!document.getElementById('account-panel'));
-        const panel = document.getElementById('account-panel');
-        if (panel) {
-          openAccountPanel();
-        } else {
-          // Topbar not ready yet — wait and retry once
-          console.warn('[AuditEase] account-panel not in DOM yet, retrying in 300ms');
-          setTimeout(() => {
-            const retryPanel = document.getElementById('account-panel');
-            if (retryPanel) {
-              openAccountPanel();
-            } else {
-              console.error('[AuditEase] account-panel still not found. Check topbar is loaded on this page.');
-            }
-          }, 300);
-        }
-      });
-    } else {
-      console.error('[AuditEase] auth-guard-signin-btn not found after overlay injection');
-    }
+    // disabled — using topbar login instead
   }
 
   // ── updateAccountUI ──────────────────────────────────────────────────
-  function updateAccountUI(user, skipGuard = false) {
+  function updateAccountUI(user) {
     updateAccountBtn(user);
     closeAccountPanel();
     renderAccountPanel(user);
 
-    if (user) {
-      // Remove auth guard overlay if present
-      const overlay = document.getElementById('auth-guard-overlay');
-      if (overlay) overlay.remove();
-
-      // Restore blurred content
-      const contentBody = document.querySelector('.page-body') 
-        || document.getElementById('dashboard-body')
-        || document.getElementById('vault-body')
-        || document.getElementById('archives-body');
-
-      if (contentBody) {
-        contentBody.style.filter = '';
-        contentBody.style.pointerEvents = '';
-      }
-    } else {
-      // Show auth guard if page is protected and we don't want to skip it
-      const isProtected = document.body.dataset.protected === 'true';
-      if (isProtected && !skipGuard) {
-        showAuthGuard();
-      }
-    }
+    // After login, reload the current page's data
+    if (typeof window.initDashboard === 'function') window.initDashboard();
+    if (typeof window.initVault === 'function') window.initVault();
+    if (typeof window.initArchives === 'function') window.initArchives();
 
     if (typeof window.onAuthChange === 'function') {
       window.onAuthChange(user);
     }
   }
 
-  // ── initAuthUI — called by topbar.js AFTER topbar HTML is injected ──────
-  // This must NOT run in DOMContentLoaded because #account-btn and
-  // #account-panel don't exist until initTopbar() injects the topbar HTML.
-  async function initAuthUI() {
+  // ── attachAuthListeners ──────────────────────────────────────────────
+  function attachAuthListeners() {
+    console.log('[AuditEase] attachAuthListeners called');
+
     const accountBtn = document.getElementById('account-btn');
-    if (accountBtn) {
-      accountBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleAccountPanel();
-      });
-    } else {
-      console.error('[AuditEase] #account-btn not found — topbar may not have been injected yet');
-    }
+    const loginBtn = document.getElementById('login-submit-btn');
+    const logoutBtn = document.getElementById('logout-btn');
+    const passwordInput = document.getElementById('login-password');
+
+    if (!accountBtn) console.error('[AuditEase] #account-btn not found');
+    if (!loginBtn) console.error('[AuditEase] #login-submit-btn not found');
+    if (!logoutBtn) console.error('[AuditEase] #logout-btn not found');
+
+    accountBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleAccountPanel();
+    });
+
+    loginBtn?.addEventListener('click', handleLogin);
+
+    passwordInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleLogin();
+    });
+
+    logoutBtn?.addEventListener('click', handleSignOut);
 
     // Close panel when clicking outside
     document.addEventListener('click', (e) => {
       const panel = document.getElementById('account-panel');
-      const btn = document.getElementById('account-btn');
-      if (panel && (!panel.classList.contains('hidden') || panel.style.display !== 'none')) {
-        if (!panel.contains(e.target) && e.target !== btn) {
-          closeAccountPanel();
-        }
+      const accountBtn = document.getElementById('account-btn');
+      if (panel && !panel.contains(e.target) && !accountBtn?.contains(e.target)) {
+        closeAccountPanel();
       }
     });
 
+    console.log('[AuditEase] All auth listeners attached successfully');
+  }
+
+  window.attachAuthListeners = attachAuthListeners;
+
+  // ── initAuthUI — called by topbar.js AFTER topbar HTML is injected ──────
+  async function initAuthUI() {
     const user = await loadCurrentUser();
     updateAccountUI(user, true);
   }
@@ -371,8 +304,10 @@
   window.AE.updateAccountBtn = updateAccountBtn;
   window.AE.renderAccountPanel = renderAccountPanel;
   window.AE.initAuthUI = initAuthUI;  // Called by topbar.js after HTML injection
+  window.AE.updateAccountUI = updateAccountUI;
   window.AE.openAccountPanel = openAccountPanel;
   window.AE.closeAccountPanel = closeAccountPanel;
   window.AE.showAuthGuard = showAuthGuard;
   window.openAccountPanel = openAccountPanel;
+  window.updateAccountUI = updateAccountUI;
 })();

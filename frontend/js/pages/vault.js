@@ -51,6 +51,14 @@
   let vaultInitialized = false;
 
   async function initVault() {
+    const main = document.getElementById('vault-body')
+      || document.getElementById('archives-body')
+      || document.querySelector('main')
+      || document.querySelector('.main-content');
+    if (main && originalMainHTML) {
+      main.innerHTML = originalMainHTML;
+    }
+
     if (vaultInitialized) {
       await fetchDocs();
       renderTable();
@@ -71,6 +79,41 @@
   window.initVault = initVault;
   window.initArchives = initVault;
 
+  let originalMainHTML = null;
+
+  function showLoginPrompt() {
+    const main = document.getElementById('vault-body')
+      || document.getElementById('archives-body')
+      || document.querySelector('main')
+      || document.querySelector('.main-content');
+    
+    if (!main) return;
+
+    if (!originalMainHTML) {
+      originalMainHTML = main.innerHTML;
+    }
+
+    main.innerHTML = `
+      <div style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 60vh;
+        gap: 12px;
+        text-align: center;
+      ">
+        <div style="font-size: 48px;">🔒</div>
+        <h2 style="color: var(--text-primary); font-size: 20px; font-weight: 600; margin: 0;">
+          Sign in to continue
+        </h2>
+        <p style="color: var(--text-secondary); font-size: 14px; margin: 0;">
+          Click the account button in the top right to sign in.
+        </p>
+      </div>
+    `;
+  }
+
   // ── Init ─────────────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', async () => {
     const pageKey = IS_ARCHIVES ? 'doc-archives' : PAGE_KEY;
@@ -80,11 +123,11 @@
 
     window.onAuthChange = handleAuthChange;
 
-    const token = window.AE.getToken();
-    currentUser = window.AE.getCurrentUser();
+    const token = localStorage.getItem('ae_token');
+    const user = localStorage.getItem('ae_user');
 
-    if (!token || !currentUser) {
-      window.AE.showAuthGuard();
+    if (!token || !user) {
+      showLoginPrompt();
       return;
     }
 
@@ -97,6 +140,8 @@
       const pageKey = IS_ARCHIVES ? 'doc-archives' : PAGE_KEY;
       window.AE.initSidebar(pageKey);
       await initVault();
+    } else {
+      showLoginPrompt();
     }
   }
 
