@@ -45,10 +45,12 @@
       if (res.ok) {
         const data = await res.json();
         currentUser = data.user;
+        localStorage.setItem('ae_user', JSON.stringify(currentUser));
         return currentUser;
       }
     } catch (e) { /* silent */ }
     clearToken();
+    localStorage.removeItem('ae_user');
     currentUser = null;
     return null;
   }
@@ -145,6 +147,7 @@
       if (res.ok) {
         setToken(data.token);
         currentUser = data.user;
+        localStorage.setItem('ae_user', JSON.stringify(currentUser));
         updateAccountUI(currentUser);
       } else {
         errEl.textContent = data.error || 'Login failed';
@@ -169,6 +172,7 @@
       await apiFetch('/api/auth/logout', { method: 'POST' });
     } catch (e) { /* silent */ }
     clearToken();
+    localStorage.removeItem('ae_user');
     currentUser = null;
     updateAccountUI(null);
   }

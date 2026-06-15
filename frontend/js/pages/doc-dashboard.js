@@ -102,20 +102,32 @@
 
   // ── Init ─────────────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', async () => {
+    // Init topbar first — this renders the topbar HTML into the DOM
     await window.AE.initTopbar({ showBack: true, backHref: '/index.html' });
     window.AE.initSidebar(PAGE_KEY);
 
     window.onAuthChange = handleAuthChange;
 
+    // NOW check session — after topbar is done, not before
     const token = localStorage.getItem('ae_token');
-    const user = localStorage.getItem('ae_user');
-
-    if (!token || !user) {
-      showLoginPrompt();
-      return;
+    let user = null;
+    try {
+      const stored = localStorage.getItem('ae_user');
+      if (stored) user = JSON.parse(stored);
+    } catch(e) {
+      localStorage.removeItem('ae_user');
     }
 
-    await initDashboard();
+    if (token && user) {
+      // Already logged in — update topbar UI and load dashboard
+      if (typeof window.updateAccountUI === 'function') {
+        window.updateAccountUI(user);
+      }
+      initDashboard();
+    } else {
+      // Not logged in — show prompt
+      showLoginPrompt();
+    }
   });
 
   async function handleAuthChange(user) {
