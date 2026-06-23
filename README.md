@@ -6,40 +6,53 @@ AuditEase is a secure full-stack audit document management web application.
 
 ## 🚀 How to Install and Run
 
-### 1. Install System Prerequisites (Node.js & SQLite)
+### 1. Prerequisites
 
-Choose the commands for your Operating System:
+This project uses native Node modules (`bcrypt`, `better-sqlite3`) that require 
+compilation tools on first install. Also, Node.js and SQLite are required.
 
+* **Arch Linux**:
+  ```bash
+  sudo pacman -Syu --needed base-devel python nodejs npm sqlite
+  ```
 * **Debian / Ubuntu**:
   ```bash
-  sudo apt update && sudo apt install -y curl build-essential sqlite3
+  sudo apt update && sudo apt install -y curl build-essential python3 sqlite3
   curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
   sudo apt install -y nodejs
   ```
-* **Fedora**:
-  ```bash
-  sudo dnf groupinstall -y "Development Tools"
-  sudo dnf install -y nodejs sqlite
-  ```
-* **Arch Linux**:
-  ```bash
-  sudo pacman -Syu --needed base-devel nodejs npm sqlite
-  ```
 * **macOS**:
   ```bash
+  xcode-select --install
   brew install node
   ```
 * **Windows**:
   Download and run the official [Node.js MSI installer](https://nodejs.org/). Make sure to check the box that automatically installs build tools for native modules.
+  Alternatively, install "Desktop development with C++" via Visual Studio Build Tools, or run: `npm install --global windows-build-tools` (run as Administrator).
 
 ---
 
 ### 2. Setup and Run the App
 
-1. **Install NPM dependencies**:
+1. **Installation**:
    ```bash
    npm install
    ```
+   If prompted with "packages have install scripts not yet covered by allowScripts", this is npm's security feature for native modules. Run:
+   ```bash
+   npm approve-scripts bcrypt better-sqlite3
+   npm install
+   ```
+   This is expected on every fresh machine the first time — it's not an error.
+
+   **Troubleshooting Note**: If `npm install` finishes but fails to build `bcrypt` or `better-sqlite3`, ensure you have the correct system prerequisites installed (see above).
+
+   **Installing on a New Machine**
+   Prefer this over `npm install` for consistent results across machines:
+   ```bash
+   npm ci
+   ```
+   If you get a "package-lock.json is out of sync" error, run `npm install` once to regenerate the lockfile, commit the updated lockfile, then others should use `npm ci` going forward.
 2. **Configure environment variables**:
    Create a `.env` file in the root directory:
    ```bash

@@ -9,7 +9,8 @@
     "add-user": "node scripts/add-user.js",
     "delete-user": "node scripts/delete-user.js",
     "change-password": "node scripts/change-password.js",
-    "list-users": "node scripts/list-users.js"
+    "list-users": "node scripts/list-users.js",
+    "postinstall": "echo 'Install complete. If bcrypt or better-sqlite3 failed to build, see README.md Troubleshooting section.'"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
@@ -18,8 +19,8 @@
     "dotenv": "^16.4.5",
     "express": "^4.18.3",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
-    "xlsx": "^0.18.5"
+    "multer": "^2.2.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "overrides": {
     "tar": "^7.5.16"
@@ -29,5 +30,9 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "allowScripts": {
+    "bcrypt@5.1.1": true,
+    "better-sqlite3@12.11.1": true
   }
 }
