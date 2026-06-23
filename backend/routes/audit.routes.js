@@ -146,6 +146,17 @@ router.patch('/engagements/:id', (req, res) => {
 // TRIAL BALANCE
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Helper: convert a 0-based column index to a spreadsheet letter (0=A, 1=B, 25=Z, 26=AA...)
+function columnIndexToLetter(index) {
+  let letter = '';
+  let num = index;
+  while (num >= 0) {
+    letter = String.fromCharCode((num % 26) + 65) + letter;
+    num = Math.floor(num / 26) - 1;
+  }
+  return letter;
+}
+
 // POST /api/audit/:id/trial-balance/preview
 router.post('/:id/trial-balance/preview', upload.single('file'), (req, res) => {
   try {
@@ -157,26 +168,74 @@ router.post('/:id/trial-balance/preview', upload.single('file'), (req, res) => {
     }
 
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    const allSheetNames = workbook.SheetNames;
 
-    if (rawData.length === 0) {
-      return res.status(400).json({ error: 'File is empty' });
+    // Sheet selection: use requested sheet, or default to first
+    const requestedSheet = req.body.sheet_name;
+    const sheetName = (requestedSheet && allSheetNames.includes(requestedSheet))
+      ? requestedSheet
+      : allSheetNames[0];
+
+    const sheet = workbook.Sheets[sheetName];
+
+    // Always read as raw array-of-arrays — no header assumption at all here
+    const rawRows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: '',
+      raw: false,
+      blankrows: true  // KEEP blank rows so row numbers stay accurate for header row selection
+    });
+
+    if (rawRows.length === 0) {
+      return res.status(400).json({ error: 'Selected sheet is empty.' });
     }
 
-    const headers = rawData[0] || [];
-    const hasHeader = req.body.has_header_row !== 'false';
-    const dataRows = hasHeader ? rawData.slice(1) : rawData;
+    const maxCols = Math.max(...rawRows.map(r => r.length), 1);
+
+    // Header row index: user explicitly picks it (0-based). Default guess: first row with 3+ non-empty cells.
+    let headerRowIndex = req.body.header_row_index !== undefined
+      ? parseInt(req.body.header_row_index, 10)
+      : null;
+
+    if (isNaN(headerRowIndex) || headerRowIndex === null) {
+      headerRowIndex = rawRows.findIndex(row =>
+        row.filter(cell => String(cell).trim() !== '').length >= 3
+      );
+      if (headerRowIndex === -1) headerRowIndex = 0;
+    }
+
+    const headerRow = rawRows[headerRowIndex] || [];
+
+    const columns = [];
+    for (let i = 0; i < maxCols; i++) {
+      const letter = columnIndexToLetter(i);
+      const headerText = headerRow[i] ? String(headerRow[i]).trim() : '';
+      columns.push({
+        index: i,
+        letter,
+        header: headerText,
+        label: headerText ? `${letter}: ${headerText}` : `Column ${letter}`
+      });
+    }
+
+    // Data rows = everything after the header row
+    const dataRows = rawRows.slice(headerRowIndex + 1);
 
     res.json({
-      headers: headers.map(String),
-      rows: dataRows.slice(0, 20).map(row => row.map(cell => cell === null || cell === undefined ? '' : cell)),
-      total_rows: dataRows.length
+      all_sheet_names: allSheetNames,
+      selected_sheet: sheetName,
+      // First 15 RAW rows (unfiltered) so the user can visually pick the header row
+      raw_preview_rows: rawRows.slice(0, 15),
+      header_row_index: headerRowIndex,
+      columns,
+      total_data_rows: dataRows.length,
+      // First 10 data rows AFTER the chosen header, for the mapping preview
+      preview_rows: dataRows.slice(0, 10)
     });
+
   } catch (err) {
-    console.error('TB preview error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('[TB PREVIEW ERROR]', err);
+    res.status(500).json({ error: 'Failed to parse file.', detail: err.message });
   }
 });
 
@@ -190,97 +249,122 @@ router.post('/:id/trial-balance/import', upload.single('file'), (req, res) => {
       return res.status(400).json({ error: 'No file received' });
     }
 
-    const {
-      col_ledger_code, col_ledger_name,
-      col_opening_balance, col_debit_transactions,
-      col_credit_transactions, col_closing_balance,
-      has_header_row
-    } = req.body;
+    let columnMap;
+    try {
+      columnMap = JSON.parse(req.body.column_map);
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid column_map format.' });
+    }
 
-    // Validate column mappings
-    const colCode = parseInt(col_ledger_code, 10);
-    const colName = parseInt(col_ledger_name, 10);
-    const colOpening = parseInt(col_opening_balance, 10);
-    const colDebit = parseInt(col_debit_transactions, 10);
-    const colCredit = parseInt(col_credit_transactions, 10);
-    const colClosing = parseInt(col_closing_balance, 10);
+    const sheetName = req.body.sheet_name;
+    const headerRowIndex = parseInt(req.body.header_row_index, 10);
 
-    if ([colCode, colName, colOpening, colDebit, colCredit, colClosing].some(isNaN)) {
-      return res.status(400).json({ error: 'All column mapping indices are required and must be numbers' });
+    if (!sheetName || isNaN(headerRowIndex)) {
+      return res.status(400).json({ error: 'sheet_name and header_row_index are required.' });
+    }
+
+    const requiredFields = [
+      'ledger_code', 'ledger_name', 'opening_balance',
+      'debit_transactions', 'credit_transactions', 'closing_balance'
+    ];
+    for (const field of requiredFields) {
+      if (columnMap[field] === undefined || columnMap[field] === null) {
+        return res.status(400).json({ error: `Missing column mapping for: ${field}` });
+      }
+    }
+    const usedIndices = Object.values(columnMap);
+    if (new Set(usedIndices).size !== usedIndices.length) {
+      return res.status(400).json({ error: 'The same column cannot be mapped to more than one field.' });
     }
 
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
+    if (!workbook.SheetNames.includes(sheetName)) {
+      return res.status(400).json({ error: `Sheet "${sheetName}" not found in file.` });
+    }
     const sheet = workbook.Sheets[sheetName];
-    const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false, blankrows: true });
+    const dataRows = rawRows.slice(headerRowIndex + 1);
 
-    const hasHeader = has_header_row !== 'false';
-    const dataRows = hasHeader ? rawData.slice(1) : rawData;
+    const parseNum = (v) => {
+      if (v === '' || v === null || v === undefined) return 0;
+      const cleaned = String(v).replace(/[,₹\s\u00A0]/g, ''); // also strips non-breaking spaces (\xa0) seen in real exports
+      const num = parseFloat(cleaned);
+      return isNaN(num) ? 0 : num;
+    };
 
-    const errors = [];
-    let imported = 0;
-    const totals = { opening_balance: 0, debit_transactions: 0, credit_transactions: 0, closing_balance: 0 };
+    // Optional: explicit list of row indices (relative to dataRows, 0-based) to SKIP
+    // e.g. group/subtotal rows the user identified in the row-filter preview step
+    let skipRowIndices = new Set();
+    if (req.body.skip_row_indices) {
+      try {
+        skipRowIndices = new Set(JSON.parse(req.body.skip_row_indices));
+      } catch (e) { /* ignore malformed, just import everything with a code */ }
+    }
 
-    const upsertStmt = db.prepare(`
-      INSERT INTO trial_balance_ledgers (engagement_id, ledger_code, ledger_name, opening_balance, debit_transactions, credit_transactions, closing_balance)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(engagement_id, ledger_code) DO UPDATE SET
-        ledger_name = excluded.ledger_name,
-        opening_balance = excluded.opening_balance,
-        debit_transactions = excluded.debit_transactions,
-        credit_transactions = excluded.credit_transactions,
-        closing_balance = excluded.closing_balance
-    `);
+    const insertMany = db.transaction((rows) => {
+      const stmt = db.prepare(`
+        INSERT INTO trial_balance_ledgers 
+          (engagement_id, ledger_code, ledger_name, opening_balance, 
+           debit_transactions, credit_transactions, closing_balance)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(engagement_id, ledger_code) DO UPDATE SET
+          ledger_name = excluded.ledger_name,
+          opening_balance = excluded.opening_balance,
+          debit_transactions = excluded.debit_transactions,
+          credit_transactions = excluded.credit_transactions,
+          closing_balance = excluded.closing_balance,
+          is_mapped = 0,
+          ie_pl_group_id = NULL
+      `);
 
-    const importTx = db.transaction(() => {
-      for (let i = 0; i < dataRows.length; i++) {
-        const row = dataRows[i];
-        const rowNum = hasHeader ? i + 2 : i + 1;
+      let imported = 0;
+      let skippedBlank = 0;
+      let skippedManual = 0;
+      const errors = [];
 
-        const ledgerCode = String(row[colCode] || '').trim();
-        const ledgerName = String(row[colName] || '').trim();
+      rows.forEach((row, i) => {
+        if (skipRowIndices.has(i)) { skippedManual++; return; }
 
-        if (!ledgerCode || !ledgerName) {
-          errors.push({ row: rowNum, error: 'Missing ledger code or name' });
-          continue;
+        const code = String(row[columnMap.ledger_code] ?? '').trim();
+        const name = String(row[columnMap.ledger_name] ?? '').trim();
+
+        // A row with no ledger code is treated as a group/subtotal/blank row — skip, don't error
+        if (!code) { skippedBlank++; return; }
+        if (!name) {
+          errors.push(`Row with ledger code "${code}" has no ledger name — skipped`);
+          return;
         }
 
-        const opening = parseFloat(row[colOpening]) || 0;
-        const debit = parseFloat(row[colDebit]) || 0;
-        const credit = parseFloat(row[colCredit]) || 0;
-        const closing = parseFloat(row[colClosing]) || 0;
+        stmt.run(
+          req.params.id, code, name,
+          parseNum(row[columnMap.opening_balance]),
+          parseNum(row[columnMap.debit_transactions]),
+          parseNum(row[columnMap.credit_transactions]),
+          parseNum(row[columnMap.closing_balance])
+        );
+        imported++;
+      });
 
-        try {
-          upsertStmt.run(req.params.id, ledgerCode, ledgerName, opening, debit, credit, closing);
-          imported++;
-          totals.opening_balance += opening;
-          totals.debit_transactions += debit;
-          totals.credit_transactions += credit;
-          totals.closing_balance += closing;
-        } catch (rowErr) {
-          errors.push({ row: rowNum, error: rowErr.message });
-        }
-      }
+      return { imported, skippedBlank, skippedManual, errors };
     });
 
-    importTx();
+    const result = insertMany(dataRows);
 
-    // Update engagement status
-    db.prepare("UPDATE audit_engagements SET status = 'Trial Balance Imported', updated_at = ? WHERE id = ?")
-      .run(new Date().toISOString(), req.params.id);
+    const totals = db.prepare(`
+      SELECT SUM(debit_transactions) AS total_debit, SUM(credit_transactions) AS total_credit, COUNT(*) AS total_count
+      FROM trial_balance_ledgers WHERE engagement_id = ?
+    `).get(req.params.id);
 
-    // Round totals
-    totals.opening_balance = Math.round(totals.opening_balance * 100) / 100;
-    totals.debit_transactions = Math.round(totals.debit_transactions * 100) / 100;
-    totals.credit_transactions = Math.round(totals.credit_transactions * 100) / 100;
-    totals.closing_balance = Math.round(totals.closing_balance * 100) / 100;
+    const isBalanced = Math.abs((totals.total_debit || 0) - (totals.total_credit || 0)) < 0.01;
 
-    const isBalanced = Math.abs(totals.debit_transactions - totals.credit_transactions) < 0.01;
+    db.prepare(`UPDATE audit_engagements SET status = 'Trial Balance Imported', updated_at = datetime('now') WHERE id = ?`)
+      .run(req.params.id);
 
-    res.json({ imported, errors, totals, isBalanced });
+    res.json({ ...result, totals, isBalanced });
+
   } catch (err) {
-    console.error('TB import error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('[TB IMPORT ERROR]', err);
+    res.status(500).json({ error: 'Failed to import trial balance.', detail: err.message });
   }
 });
 

@@ -8,8 +8,42 @@
   const PAGE_URL = '/audit/trial-balance.html';
 
   let engagementId = null;
-  let uploadFile = null;
-  let previewData = null; // Contains headers, rows, total_rows
+
+  // ── Import Wizard State ─────────────────────────────────────────────
+  let importState = {
+    file: null,
+    allSheetNames: [],
+    selectedSheet: null,
+    headerRowIndex: null,
+    rawPreviewRows: [],
+    columns: [],
+    previewRows: [],
+    columnMap: {
+      ledger_code: null, ledger_name: null, opening_balance: null,
+      debit_transactions: null, credit_transactions: null, closing_balance: null
+    },
+    manualSkipRows: new Set() // indices within previewRows the user explicitly excludes
+  };
+
+  const FIELD_LABELS = {
+    ledger_code: 'Ledger Code', ledger_name: 'Ledger Name', opening_balance: 'Opening Balance',
+    debit_transactions: 'Debit Transactions', credit_transactions: 'Credit Transactions', closing_balance: 'Closing Balance'
+  };
+
+  function autoDetectColumn(columns, fieldKey) {
+    const patterns = {
+      ledger_code: /ledger\s*code|a\/?c\s*no|account\s*no|gl\s*code/i,
+      ledger_name: /ledger.?name|particular|name|description/i,
+      opening_balance: /open/i,
+      debit_transactions: /debit/i,
+      credit_transactions: /credit/i,
+      closing_balance: /clos/i
+    };
+    const pattern = patterns[fieldKey];
+    if (!pattern) return null;
+    const match = columns.find(c => c.header && pattern.test(c.header));
+    return match ? match.index : null;
+  }
 
   // View state
   let ledgers = [];
@@ -18,15 +52,6 @@
   const viewLimit = 50;
   let viewSearch = '';
   let viewMappedFilter = 'all'; // 'all', 'mapped', 'unmapped'
-
-  const SYSTEM_FIELDS = [
-    { key: 'col_ledger_code', label: 'Ledger Code', pattern: 'code' },
-    { key: 'col_ledger_name', label: 'Ledger Name', pattern: 'name' },
-    { key: 'col_opening_balance', label: 'Opening Balance', pattern: 'open' },
-    { key: 'col_debit_transactions', label: 'Debit Transactions', pattern: 'debit' },
-    { key: 'col_credit_transactions', label: 'Credit Transactions', pattern: 'credit' },
-    { key: 'col_closing_balance', label: 'Closing Balance', pattern: 'closing' }
-  ];
 
   document.addEventListener('DOMContentLoaded', async () => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -84,8 +109,10 @@
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('tb-file-input');
 
-    // Drag-and-drop
+    // Click to open file picker
     dropZone?.addEventListener('click', () => fileInput?.click());
+
+    // Drag-and-drop
     dropZone?.addEventListener('dragover', (e) => {
       e.preventDefault();
       dropZone.classList.add('dragover');
@@ -95,19 +122,22 @@
       e.preventDefault();
       dropZone.classList.remove('dragover');
       if (e.dataTransfer.files.length > 0) {
-        handleFileSelect(e.dataTransfer.files[0]);
+        const file = e.dataTransfer.files[0];
+        fileInput.files = e.dataTransfer.files;
+        loadFilePreview(file);
       }
     });
 
     fileInput?.addEventListener('change', (e) => {
       if (e.target.files.length > 0) {
-        handleFileSelect(e.target.files[0]);
+        loadFilePreview(e.target.files[0]);
       }
     });
 
     // Step 2 & 3 back/next buttons
     document.getElementById('btn-wizard-back-2')?.addEventListener('click', () => showStep(1));
-    document.getElementById('btn-wizard-next-2')?.addEventListener('click', proceedToStep3);
+    document.getElementById('mapping-back-btn')?.addEventListener('click', () => showStep(1));
+    document.getElementById('mapping-continue-btn')?.addEventListener('click', proceedToStep3);
     document.getElementById('btn-wizard-back-3')?.addEventListener('click', () => showStep(2));
     document.getElementById('btn-confirm-import')?.addEventListener('click', executeImport);
   }
@@ -132,195 +162,270 @@
     });
   }
 
-  async function handleFileSelect(file) {
-    uploadFile = file;
-    // Call preview endpoint to get column names
-    const formData = new FormData();
-    formData.append('file', uploadFile);
-    formData.append('has_header_row', 'true');
+  // Step A — file selected: fetch sheet list + first preview using sheet[0], header guess
+  async function loadFilePreview(file, sheetName = null, headerRowIndex = null) {
+    importState.file = file;
+    const engagementId = new URLSearchParams(window.location.search).get('id');
 
-    try {
-      const res = await window.AE.apiFetch(`/api/audit/${engagementId}/trial-balance/preview`, {
-        method: 'POST',
-        body: formData
+    const formData = new FormData();
+    formData.append('file', file);
+    if (sheetName) formData.append('sheet_name', sheetName);
+    if (headerRowIndex !== null) formData.append('header_row_index', headerRowIndex);
+
+    const res = await window.AE.apiFetch(`/api/audit/${engagementId}/trial-balance/preview`, {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Failed to read file.'); return; }
+
+    importState.allSheetNames = data.all_sheet_names;
+    importState.selectedSheet = data.selected_sheet;
+    importState.headerRowIndex = data.header_row_index;
+    importState.rawPreviewRows = data.raw_preview_rows;
+    importState.columns = data.columns;
+    importState.previewRows = data.preview_rows;
+
+    renderSheetSelector();
+    renderRawRowPicker();
+
+    // If we already have a confirmed header row with real columns, show mapper too
+    if (data.columns.some(c => c.header)) {
+      Object.keys(FIELD_LABELS).forEach(f => {
+        importState.columnMap[f] = autoDetectColumn(data.columns, f);
+      });
+      document.getElementById('column-mapping-section').style.display = 'block';
+      renderColumnMapper();
+      renderMappingPreview();
+    } else {
+      document.getElementById('column-mapping-section').style.display = 'none';
+    }
+
+    showStep(2);
+    validateContinueButton();
+  }
+
+  function renderSheetSelector() {
+    const select = document.getElementById('sheet-select');
+    if (!select) return;
+    
+    // Check if we need to render or just update selection
+    if (select.children.length === 0 || select.dataset.sheets !== JSON.stringify(importState.allSheetNames)) {
+      select.innerHTML = '';
+      select.dataset.sheets = JSON.stringify(importState.allSheetNames);
+      importState.allSheetNames.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        if (name === importState.selectedSheet) opt.selected = true;
+        select.appendChild(opt);
+      });
+    } else {
+      select.value = importState.selectedSheet;
+    }
+  }
+
+  document.getElementById('sheet-select')?.addEventListener('change', (e) => {
+    // Re-preview from scratch on the new sheet — header row guess resets
+    loadFilePreview(importState.file, e.target.value, null);
+  });
+
+  // Step B — show raw rows, let user click to mark header row
+  function renderRawRowPicker() {
+    const tbody = document.getElementById('raw-row-picker-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    importState.rawPreviewRows.forEach((row, idx) => {
+      const tr = document.createElement('tr');
+      tr.style.cursor = 'pointer';
+      if (idx === importState.headerRowIndex) {
+        tr.style.background = 'var(--accent-subtle)';
+        tr.style.outline = '2px solid var(--accent)';
+      }
+
+      const cells = row.map(cell => `<td>${window.AE.escapeHtml(String(cell ?? ''))}</td>`).join('');
+      tr.innerHTML = `<td style="font-family:monospace;color:var(--text-muted);">Row ${idx + 1}</td>${cells}`;
+
+      tr.addEventListener('click', () => {
+        loadFilePreview(importState.file, importState.selectedSheet, idx);
       });
 
-      if (res.ok) {
-        previewData = await res.json();
-        renderColumnMapper();
-        showStep(2);
-      } else {
-        const err = await res.json();
-        alert(err.error || 'Failed to parse file.');
-      }
-    } catch (e) {
-      console.error(e);
-      alert('Network error parsing preview.');
-    }
+      tbody.appendChild(tr);
+    });
   }
 
-  function fuzzyMatchIndex(header, fieldPattern) {
-    const h = header.toLowerCase();
-    const p = fieldPattern;
-    if (p === 'code') {
-      return h.includes('code') || h === 'ac' || h.includes('account') || h === 'acc';
-    }
-    if (p === 'name') {
-      return h.includes('name') || h.includes('desc') || h.includes('title') || h.includes('particulars');
-    }
-    if (p === 'open') {
-      return h.includes('open') || h.includes('op') || h.includes('beg');
-    }
-    if (p === 'debit') {
-      return h.includes('debit') || h === 'dr' || h === 'debits';
-    }
-    if (p === 'credit') {
-      return h.includes('credit') || h === 'cr' || h === 'credits';
-    }
-    if (p === 'closing') {
-      return h.includes('closing') || h === 'cl' || h.includes('close') || (h.includes('balance') && !h.includes('open'));
-    }
-    return false;
-  }
-
+  // Step C — column mapper (same approach as before, but using real headers from chosen row)
   function renderColumnMapper() {
-    const mapper = document.getElementById('column-mapper');
-    if (!mapper) return;
+    const container = document.getElementById('column-mapper');
+    if (!container) return;
+    container.innerHTML = '';
 
-    const optionsHtml = previewData.headers.map((h, idx) => {
-      const letter = String.fromCharCode(65 + idx); // A, B, C...
-      return `<option value="${idx}">Col ${letter}: ${window.AE.escapeHtml(h || `Column ${idx}`)}</option>`;
-    }).join('');
+    Object.entries(FIELD_LABELS).forEach(([fieldKey, fieldLabel]) => {
+      const row = document.createElement('div');
+      row.className = 'column-mapper-row';
+      row.style.cssText = 'display:grid; grid-template-columns:200px 1fr; gap:12px; align-items:center; margin-bottom:10px;';
 
-    mapper.innerHTML = SYSTEM_FIELDS.map(field => {
-      // Find fuzzy match index
-      let matchedIdx = 0;
-      for (let i = 0; i < previewData.headers.length; i++) {
-        if (fuzzyMatchIndex(previewData.headers[i] || '', field.pattern)) {
-          matchedIdx = i;
-          break;
-        }
-      }
+      const label = document.createElement('label');
+      label.textContent = fieldLabel + ' *';
+      label.style.cssText = 'font-size:13px;color:var(--text-secondary);';
 
-      return `
-        <div class="column-mapper-label">${window.AE.escapeHtml(field.label)}</div>
-        <div class="column-mapper-arrow">&rarr;</div>
-        <div>
-          <select class="input" id="map_${field.key}">
-            ${optionsHtml}
-          </select>
-        </div>
+      const select = document.createElement('select');
+      select.dataset.field = fieldKey;
+      select.style.cssText = 'padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-surface);color:var(--text-primary);width:100%;';
+
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = '— Select a column —';
+      select.appendChild(emptyOpt);
+
+      importState.columns.forEach(col => {
+        const opt = document.createElement('option');
+        opt.value = col.index;
+        opt.textContent = col.label;
+        if (importState.columnMap[fieldKey] === col.index) opt.selected = true;
+        select.appendChild(opt);
+      });
+
+      select.addEventListener('change', (e) => {
+        importState.columnMap[fieldKey] = e.target.value === '' ? null : parseInt(e.target.value, 10);
+        renderMappingPreview();
+        validateContinueButton();
+      });
+
+      row.appendChild(label);
+      row.appendChild(select);
+      container.appendChild(row);
+    });
+  }
+
+  // Step D — live preview, now also flags rows that will be SKIPPED (blank ledger code)
+  function renderMappingPreview() {
+    const tbody = document.getElementById('mapping-preview-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    const map = importState.columnMap;
+    let blankCount = 0;
+
+    importState.previewRows.slice(0, 10).forEach((row, idx) => {
+      const getVal = (fieldIdx) => fieldIdx !== null && fieldIdx !== undefined ? (row[fieldIdx] ?? '') : '';
+      const code = getVal(map.ledger_code);
+      const willImport = String(code).trim() !== '';
+      if (!willImport) blankCount++;
+
+      const tr = document.createElement('tr');
+      if (!willImport) tr.style.opacity = '0.45';
+
+      tr.innerHTML = `
+        <td>${window.AE.escapeHtml(String(code))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.ledger_name)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.opening_balance)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.debit_transactions)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.credit_transactions)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.closing_balance)))}</td>
+        <td>${willImport ? '✓ Import' : '— Skip (no ledger code)'}</td>
       `;
-    }).join('') + `
-      <div style="grid-column: 1 / -1; margin-top: 12px;">
-        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary);">
-          <input type="checkbox" id="chk-has-header" checked />
-          First row is a header row
-        </label>
-      </div>
-      <div style="grid-column: 1 / -1; margin-top: 16px;">
-        <h4 style="font-size:12px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px;">Live Mapping Sample</h4>
-        <div style="overflow-x:auto;">
-          <table class="preview-table" id="tb-mapping-live-preview" style="width:100%;"></table>
-        </div>
-      </div>
-    `;
-
-    // Add change listeners to update live preview
-    SYSTEM_FIELDS.forEach(field => {
-      const el = document.getElementById(`map_${field.key}`);
-      if (el) {
-        el.value = matchedIdxForField(field.key);
-        el.addEventListener('change', renderLiveMappingPreview);
-      }
+      tbody.appendChild(tr);
     });
 
-    renderLiveMappingPreview();
-  }
-
-  function matchedIdxForField(fieldKey) {
-    const field = SYSTEM_FIELDS.find(f => f.key === fieldKey);
-    if (!field) return 0;
-    for (let i = 0; i < previewData.headers.length; i++) {
-      if (fuzzyMatchIndex(previewData.headers[i] || '', field.pattern)) {
-        return i;
-      }
+    const note = document.getElementById('skip-summary-note');
+    if (note) {
+      note.textContent = blankCount > 0
+        ? `${blankCount} of the previewed rows have no ledger code and will be treated as group/subtotal rows — they will be skipped automatically.`
+        : '';
     }
-    // Default fallback
-    if (fieldKey === 'col_ledger_code') return 0;
-    if (fieldKey === 'col_ledger_name') return 1;
-    if (fieldKey === 'col_opening_balance') return 2;
-    if (fieldKey === 'col_debit_transactions') return 3;
-    if (fieldKey === 'col_credit_transactions') return 4;
-    if (fieldKey === 'col_closing_balance') return 5;
-    return 0;
   }
 
-  function renderLiveMappingPreview() {
-    const table = document.getElementById('tb-mapping-live-preview');
-    if (!table) return;
+  function validateContinueButton() {
+    const map = importState.columnMap;
+    const allMapped = Object.values(map).every(v => v !== null);
+    const values = Object.values(map).filter(v => v !== null);
+    const noDuplicates = new Set(values).size === values.length;
 
-    const mapping = getSelectedMapping();
+    const errorEl = document.getElementById('mapping-validation-error');
+    const btn = document.getElementById('mapping-continue-btn');
+    if (!btn) return;
 
-    const headersHtml = SYSTEM_FIELDS.map(f => `<th>${window.AE.escapeHtml(f.label)}</th>`).join('');
-    const rowsHtml = previewData.rows.slice(0, 5).map((row, rIdx) => {
-      return `<tr>` + SYSTEM_FIELDS.map(field => {
-        const colIdx = mapping[field.key];
-        const val = row[colIdx] !== undefined ? row[colIdx] : '';
-        return `<td>${window.AE.escapeHtml(String(val))}</td>`;
-      }).join('') + `</tr>`;
-    }).join('');
+    if (!document.getElementById('column-mapping-section') || document.getElementById('column-mapping-section').style.display === 'none') {
+        if(errorEl) errorEl.style.display = 'none';
+        btn.disabled = true;
+        return;
+    }
 
-    table.innerHTML = `<thead><tr>${headersHtml}</tr></thead><tbody>${rowsHtml}</tbody>`;
+    if (!allMapped) {
+      const missing = Object.entries(map).filter(([_, v]) => v === null).map(([k]) => FIELD_LABELS[k]);
+      if (errorEl) {
+        errorEl.textContent = `Please map: ${missing.join(', ')}`;
+        errorEl.style.display = 'block';
+      }
+      btn.disabled = true;
+      return;
+    }
+    if (!noDuplicates) {
+      if (errorEl) {
+        errorEl.textContent = 'Each column can only be mapped to one field.';
+        errorEl.style.display = 'block';
+      }
+      btn.disabled = true;
+      return;
+    }
+    if (errorEl) errorEl.style.display = 'none';
+    btn.disabled = false;
   }
 
-  function getSelectedMapping() {
-    const mapping = {};
-    SYSTEM_FIELDS.forEach(f => {
-      const select = document.getElementById(`map_${f.key}`);
-      mapping[f.key] = parseInt(select?.value || 0);
-    });
-    return mapping;
-  }
-
+  // ── Proceed to Step 3: Preview & Confirm ────────────────────────────
   function proceedToStep3() {
-    // Show validation preview
     const table = document.getElementById('tb-preview-table');
     if (!table) return;
 
-    const mapping = getSelectedMapping();
-    const hasHeader = document.getElementById('chk-has-header')?.checked;
+    const map = importState.columnMap;
+    const allRows = importState.previewRows;
 
-    // Call API /preview again to update preview if hasHeader changed
-    // In this case, we have local previewData anyway
-    const headersHtml = SYSTEM_FIELDS.map(f => `<th>${window.AE.escapeHtml(f.label)}</th>`).join('');
-    const rowsHtml = previewData.rows.slice(0, 10).map((row, rIdx) => {
-      return `<tr>` + SYSTEM_FIELDS.map(field => {
-        const colIdx = mapping[field.key];
-        const val = row[colIdx] !== undefined ? row[colIdx] : '';
-        return `<td>${window.AE.escapeHtml(String(val))}</td>`;
-      }).join('') + `</tr>`;
+    const headersHtml = [
+      'Ledger Code', 'Ledger Name', 'Opening Balance',
+      'Debit Transactions', 'Credit Transactions', 'Closing Balance'
+    ].map(h => `<th>${window.AE.escapeHtml(h)}</th>`).join('');
+
+    const rowsHtml = allRows.slice(0, 10).map(row => {
+      const getVal = (idx) => idx !== null && idx !== undefined ? (row[idx] ?? '') : '';
+      return `<tr>
+        <td>${window.AE.escapeHtml(String(getVal(map.ledger_code)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.ledger_name)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.opening_balance)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.debit_transactions)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.credit_transactions)))}</td>
+        <td>${window.AE.escapeHtml(String(getVal(map.closing_balance)))}</td>
+      </tr>`;
     }).join('');
 
     table.innerHTML = `<thead><tr>${headersHtml}</tr></thead><tbody>${rowsHtml}</tbody>`;
 
-    // Compute client-side checks for the preview
+    // Compute client-side balance check from all preview rows
+    const parseNum = (v) => {
+      if (v === '' || v === null || v === undefined) return 0;
+      const cleaned = String(v).replace(/[,₹\s]/g, '');
+      const num = parseFloat(cleaned);
+      return isNaN(num) ? 0 : num;
+    };
+
     let debitSum = 0;
     let creditSum = 0;
-    previewData.rows.forEach(row => {
-      const dr = parseFloat(String(row[mapping.col_debit_transactions] || '').replace(/,/g, '')) || 0;
-      const cr = parseFloat(String(row[mapping.col_credit_transactions] || '').replace(/,/g, '')) || 0;
-      debitSum += dr;
-      creditSum += cr;
+    allRows.forEach(row => {
+      const code = String(row[map.ledger_code] ?? '').trim();
+      if (code) { // Only count rows that will be imported
+        debitSum += parseNum(row[map.debit_transactions]);
+        creditSum += parseNum(row[map.credit_transactions]);
+      }
     });
 
     const isBalanced = Math.abs(debitSum - creditSum) < 0.01;
     const checkContainer = document.getElementById('balance-check-container');
     if (checkContainer) {
+      const totalRows = importState.previewRows.length; // Approximate total rows in preview
       if (isBalanced) {
         checkContainer.innerHTML = `
           <div class="balance-check balanced">
-            <span>✓</span> Balanced: Total Debits equal Total Credits (Preview of ${previewData.total_rows} rows).
+            <span>✓</span> Balanced: Total Debits equal Total Credits (Preview of ${totalRows} rows).
           </div>
         `;
       } else {
@@ -336,41 +441,52 @@
     showStep(3);
   }
 
+  // ── Final Import ────────────────────────────────────────────────────
   async function executeImport() {
-    const mapping = getSelectedMapping();
-    const hasHeader = document.getElementById('chk-has-header')?.checked;
-
     const formData = new FormData();
-    formData.append('file', uploadFile);
-    formData.append('has_header_row', hasHeader ? 'true' : 'false');
-    SYSTEM_FIELDS.forEach(f => {
-      formData.append(f.key, mapping[f.key]);
-    });
+    formData.append('file', importState.file);
+    formData.append('sheet_name', importState.selectedSheet);
+    formData.append('header_row_index', importState.headerRowIndex);
+    formData.append('column_map', JSON.stringify(importState.columnMap));
+    formData.append('skip_row_indices', JSON.stringify(Array.from(importState.manualSkipRows)));
 
     const confirmBtn = document.getElementById('btn-confirm-import');
     if (confirmBtn) confirmBtn.disabled = true;
 
     try {
+      const engagementId = new URLSearchParams(window.location.search).get('id');
       const res = await window.AE.apiFetch(`/api/audit/${engagementId}/trial-balance/import`, {
         method: 'POST',
         body: formData
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        alert(`Successfully imported ${data.imported} ledgers.`);
-        // Switch to view tab
-        document.getElementById('tab-btn-view')?.click();
-      } else {
-        const err = await res.json();
-        alert(err.error || 'Import failed.');
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Import failed.');
         if (confirmBtn) confirmBtn.disabled = false;
+        return;
       }
+      
+      showImportSuccess(data);
     } catch (e) {
-      console.error(e);
+      console.error('[Import Error]', e);
       alert('Network error during import.');
       if (confirmBtn) confirmBtn.disabled = false;
     }
+  }
+
+  function showImportSuccess(data) {
+    const msg = [
+      `${data.imported} ledger accounts imported successfully.`,
+      data.skippedBlank > 0 ? `${data.skippedBlank} rows skipped (group/subtotal rows with no ledger code).` : '',
+      data.skippedManual > 0 ? `${data.skippedManual} rows manually excluded.` : '',
+      data.errors && data.errors.length > 0 ? `${data.errors.length} rows had errors — check the details below.` : '',
+      `Balance check: ${data.isBalanced ? '✓ Balanced' : '✗ Out of balance'}`
+    ].filter(Boolean).join('\n');
+    
+    alert(msg);
+    // Switch to view tab
+    document.getElementById('tab-btn-view')?.click();
   }
 
   // ── View Tab ────────────────────────────────────────────────────────
