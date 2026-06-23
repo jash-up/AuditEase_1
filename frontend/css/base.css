@@ -277,6 +277,7 @@ label {
 /* ── Page Layout ──────────────────────────────────────────────────────── */
 .page-layout {
   display: flex;
+  flex-direction: column;
   min-height: 100vh;
   padding-top: var(--topbar-height);
 }

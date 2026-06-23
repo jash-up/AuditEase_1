@@ -79,6 +79,8 @@
 
 /* ── Audit Sub-nav ──────────────────────────────── */
 .audit-subnav {
+  width: calc(100% - var(--sidebar-width));
+  margin-left: var(--sidebar-width);
   height: 40px;
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
