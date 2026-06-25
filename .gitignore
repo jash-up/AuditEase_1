@@ -1,9 +1,37 @@
+# Dependencies
 node_modules/
-backend/storage/vault/
-backend/storage/vault/*
+
+# Environment Variables
+.env
+.env.local
+
+# Database files
 *.db
 *.db-shm
 *.db-wal
-.env
-joe
+*.sqlite
+*.sqlite3
 
+# Uploads & Storage
+backend/storage/vault/
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary & Test files
+server.pid
+mock_tb.xlsx
+test-import.js
+joe
