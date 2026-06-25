@@ -5,7 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const db = require('../db');
+const { db } = require('../db');
 const { requireAuth } = require('../auth');
 const { encryptFile, decryptFile } = require('../utils/crypto');
 

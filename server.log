@@ -1,0 +1,8 @@
+(node:31992) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+🚀 AuditEase server running at http://localhost:3000
+   Network access: http://<your-local-ip>:3000
+   Environment: development
+   Database: auditease.db
+

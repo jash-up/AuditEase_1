@@ -83,36 +83,36 @@
 
   function renderSection(sectionName, sectionData) {
     let html = `<div class="fs-section-title">${sectionName.toUpperCase()}</div>`;
-    const groups = sectionData.groups || {};
+    const subgroups = sectionData.subgroups || {};
 
-    if (Object.keys(groups).length === 0) {
+    if (Object.keys(subgroups).length === 0) {
       html += `<div style="font-size:12px;color:var(--text-muted);padding:8px 0;font-style:italic;">No mapped ledgers.</div>`;
       return html;
     }
 
-    for (const groupKey in groups) {
-      const g = groups[groupKey];
+    for (const subKey in subgroups) {
+      const sg = subgroups[subKey];
       html += `
         <div class="fs-group-row">
-          <span>${window.AE.escapeHtml(g.group_name)}</span>
-          <span class="fs-amount">${fmt(g.total)}</span>
+          <span>${window.AE.escapeHtml(sg.subgroup_name)}</span>
+          <span class="fs-amount">${fmt(sg.total)}</span>
         </div>
       `;
 
-      const subgroups = g.subgroups || {};
-      for (const subKey in subgroups) {
-        const sg = subgroups[subKey];
+      const subSubgroups = sg.subSubgroups || {};
+      for (const ssgKey in subSubgroups) {
+        const ssg = subSubgroups[ssgKey];
         html += `
           <div class="fs-subgroup-row">
-            <span>${window.AE.escapeHtml(sg.subgroup_name)}</span>
-            <span class="fs-amount">${fmt(sg.total)}</span>
+            <span>${window.AE.escapeHtml(ssg.sub_subgroup_name)}</span>
+            <span class="fs-amount">${fmt(ssg.total)}</span>
           </div>
         `;
 
-        const ledgers = sg.ledgers || [];
+        const ledgers = ssg.ledgers || [];
         ledgers.forEach(l => {
           html += `
-            <div class="fs-ledger-row">
+            <div class="fs-ledger-row" style="padding-left: 32px;">
               <span>[${window.AE.escapeHtml(l.ledger_code)}] ${window.AE.escapeHtml(l.ledger_name)}</span>
               <span class="fs-amount">${fmt(l.adjusted_closing)}</span>
             </div>

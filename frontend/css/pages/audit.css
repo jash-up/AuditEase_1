@@ -241,17 +241,17 @@
 /* ── Mapping Page Layout ────────────────────────── */
 .mapping-layout {
   display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 32px;
+  grid-template-columns: 280px 1fr;
+  gap: 20px;
   align-items: start;
 }
 .mapping-left {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 20px;
-  height: auto;
-  overflow: visible;
+  padding: 16px;
+  max-height: 70vh;
+  overflow-y: auto;
 }
 .mapping-right {
   background: var(--bg-surface);

@@ -1,6 +1,6 @@
 'use strict';
 const jwt = require('jsonwebtoken');
-const db = require('./db');
+const { db } = require('./db');
 
 /**
  * Express middleware that requires a valid JWT token.

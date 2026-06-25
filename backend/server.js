@@ -2,7 +2,7 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const db = require('./db');
+const { db } = require('./db');
 const { requireAuth } = require('./auth');
 const authRoutes = require('./routes/auth.routes');
 const documentsRoutes = require('./routes/documents.routes');

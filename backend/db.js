@@ -77,14 +77,26 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
-  CREATE TABLE IF NOT EXISTS ie_pl_groups (
+  CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
-    ie_pl_type TEXT NOT NULL,
-    group_code TEXT NOT NULL,
-    group_name TEXT NOT NULL,
-    subgroup_code TEXT NOT NULL,
-    subgroup_name TEXT NOT NULL,
+    name TEXT NOT NULL,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS subgroups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS sub_subgroups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subgroup_id INTEGER NOT NULL REFERENCES subgroups(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
     display_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -98,7 +110,7 @@ db.exec(`
     debit_transactions REAL NOT NULL DEFAULT 0,
     credit_transactions REAL NOT NULL DEFAULT 0,
     closing_balance REAL NOT NULL DEFAULT 0,
-    ie_pl_group_id INTEGER REFERENCES ie_pl_groups(id),
+    sub_subgroup_id INTEGER REFERENCES sub_subgroups(id),
     is_mapped INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(engagement_id, ledger_code, ledger_name)
@@ -245,6 +257,78 @@ function migrateUsersAddRole() {
 }
 
 migrateTrialBalanceUniqueness();
+
+// Migration: groups hierarchy
+function migrateGroupsHierarchy() {
+  const tableInfo = db.pragma('table_info(trial_balance_ledgers)');
+  const hasOldCol = tableInfo.some(col => col.name === 'ie_pl_group_id');
+  if (hasOldCol) {
+    console.log('[Migration] Migrating to 3-level groups hierarchy...');
+    db.exec(`
+      BEGIN TRANSACTION;
+
+      CREATE TABLE trial_balance_ledgers_hier (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+        ledger_code TEXT NOT NULL,
+        ledger_name TEXT NOT NULL,
+        opening_balance REAL NOT NULL DEFAULT 0,
+        debit_transactions REAL NOT NULL DEFAULT 0,
+        credit_transactions REAL NOT NULL DEFAULT 0,
+        closing_balance REAL NOT NULL DEFAULT 0,
+        sub_subgroup_id INTEGER REFERENCES sub_subgroups(id),
+        is_mapped INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(engagement_id, ledger_code, ledger_name)
+      );
+
+      INSERT INTO trial_balance_ledgers_hier 
+        SELECT id, engagement_id, ledger_code, ledger_name, opening_balance,
+               debit_transactions, credit_transactions, closing_balance,
+               NULL, 0, created_at
+        FROM trial_balance_ledgers;
+
+      DROP TABLE trial_balance_ledgers;
+      ALTER TABLE trial_balance_ledgers_hier RENAME TO trial_balance_ledgers;
+      
+      DROP TABLE IF EXISTS ie_pl_groups;
+
+      COMMIT;
+    `);
+    console.log('[Migration] Groups hierarchy migration complete.');
+  }
+}
+migrateGroupsHierarchy();
 migrateUsersAddRole();
 
-module.exports = db;
+function seedDefaultGroupsForEngagement(engagementId) {
+  const GROUP_NAMES = ['Income', 'Expenditure', 'Asset', 'Liability', 'Equity'];
+  const SUBGROUP_NAMES = ['A', 'B', 'C', 'D', 'E', 'F'];
+  const SUBSUBGROUP_NAMES = ['1', '2', '3', '4', '5', '6'];
+
+  const insertGroup = db.prepare('INSERT INTO groups (engagement_id, name, display_order) VALUES (?, ?, ?)');
+  const insertSubgroup = db.prepare('INSERT INTO subgroups (group_id, name, display_order) VALUES (?, ?, ?)');
+  const insertSubSubgroup = db.prepare('INSERT INTO sub_subgroups (subgroup_id, name, display_order) VALUES (?, ?, ?)');
+
+  const tx = db.transaction(() => {
+    GROUP_NAMES.forEach((gName, gIdx) => {
+      const gRes = insertGroup.run(engagementId, gName, gIdx);
+      const gId = gRes.lastInsertRowid;
+      
+      SUBGROUP_NAMES.forEach((sgName, sgIdx) => {
+        const sgRes = insertSubgroup.run(gId, sgName, sgIdx);
+        const sgId = sgRes.lastInsertRowid;
+        
+        SUBSUBGROUP_NAMES.forEach((ssgName, ssgIdx) => {
+          insertSubSubgroup.run(sgId, ssgName, ssgIdx);
+        });
+      });
+    });
+  });
+  tx();
+}
+
+module.exports = {
+  db,
+  seedDefaultGroupsForEngagement
+};

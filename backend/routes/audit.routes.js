@@ -6,7 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const XLSX = require('xlsx');
 const { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, Packer } = require('docx');
-const db = require('../db');
+const { db, seedDefaultGroupsForEngagement } = require('../db');
 const { requireAuth } = require('../auth');
 const { encryptFile } = require('../utils/crypto');
 
@@ -71,6 +71,8 @@ router.post('/engagements', (req, res) => {
       LEFT JOIN users u ON e.created_by = u.id
       WHERE e.id = ?
     `).get(result.lastInsertRowid);
+
+    seedDefaultGroupsForEngagement(result.lastInsertRowid);
 
     res.status(201).json(engagement);
   } catch (err) {
@@ -313,7 +315,7 @@ router.post('/:id/trial-balance/import', upload.single('file'), (req, res) => {
           credit_transactions = credit_transactions + excluded.credit_transactions,
           closing_balance     = closing_balance + excluded.closing_balance,
           is_mapped = 0,
-          ie_pl_group_id = NULL
+          sub_subgroup_id = NULL
       `);
 
       let imported = 0;
@@ -381,13 +383,17 @@ router.get('/:id/trial-balance', (req, res) => {
     const engagement = db.prepare('SELECT * FROM audit_engagements WHERE id = ?').get(req.params.id);
     if (!engagement) return res.status(404).json({ error: 'Engagement not found' });
 
-    const { search, mapped } = req.query;
+    const { search, mapped, group_id, subgroup_id, sub_subgroup_id } = req.query;
 
     let query = `
       SELECT tb.*,
-             g.ie_pl_type, g.group_code, g.group_name, g.subgroup_code, g.subgroup_name
+             g.id AS group_id, g.name AS group_name,
+             sg.id AS subgroup_id, sg.name AS subgroup_name,
+             ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name
       FROM trial_balance_ledgers tb
-      LEFT JOIN ie_pl_groups g ON tb.ie_pl_group_id = g.id
+      LEFT JOIN sub_subgroups ssg ON tb.sub_subgroup_id = ssg.id
+      LEFT JOIN subgroups sg ON ssg.subgroup_id = sg.id
+      LEFT JOIN groups g ON sg.group_id = g.id
       WHERE tb.engagement_id = ?
     `;
     const params = [req.params.id];
@@ -400,6 +406,17 @@ router.get('/:id/trial-balance', (req, res) => {
       query += ' AND tb.is_mapped = 1';
     } else if (mapped === 'false') {
       query += ' AND tb.is_mapped = 0';
+    }
+
+    if (sub_subgroup_id) {
+      query += ' AND ssg.id = ?';
+      params.push(sub_subgroup_id);
+    } else if (subgroup_id) {
+      query += ' AND sg.id = ?';
+      params.push(subgroup_id);
+    } else if (group_id) {
+      query += ' AND g.id = ?';
+      params.push(group_id);
     }
 
     query += ' ORDER BY tb.ledger_code ASC';
@@ -439,122 +456,252 @@ router.get('/:id/trial-balance', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IE_PL GROUPS
+// GROUPS HIERARCHY
 // ─────────────────────────────────────────────────────────────────────────────
 
-// GET /api/audit/:id/groups
-router.get('/:id/groups', (req, res) => {
+// GET /api/audit/:id/groups-tree
+router.get('/:id/groups-tree', (req, res) => {
   try {
     const engagement = db.prepare('SELECT * FROM audit_engagements WHERE id = ?').get(req.params.id);
     if (!engagement) return res.status(404).json({ error: 'Engagement not found' });
 
-    const groups = db.prepare(`
-      SELECT g.*,
-             (SELECT COUNT(*) FROM trial_balance_ledgers WHERE ie_pl_group_id = g.id) AS ledger_count
-      FROM ie_pl_groups g
+    const treeData = db.prepare(`
+      SELECT 
+        g.id AS group_id, g.name AS group_name, g.display_order AS group_order,
+        sg.id AS subgroup_id, sg.name AS subgroup_name, sg.display_order AS subgroup_order,
+        ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name, ssg.display_order AS sub_subgroup_order,
+        (SELECT COUNT(*) FROM trial_balance_ledgers WHERE sub_subgroup_id = ssg.id) AS ssg_ledger_count
+      FROM groups g
+      JOIN subgroups sg ON sg.group_id = g.id
+      JOIN sub_subgroups ssg ON ssg.subgroup_id = sg.id
       WHERE g.engagement_id = ?
-      ORDER BY g.display_order ASC, g.group_code ASC
+      ORDER BY g.display_order ASC, sg.display_order ASC, ssg.display_order ASC
     `).all(req.params.id);
 
-    // Group by ie_pl_type
-    const grouped = {};
-    for (const type of VALID_IE_PL_TYPES) {
-      grouped[type] = [];
-    }
-    for (const group of groups) {
-      if (grouped[group.ie_pl_type]) {
-        grouped[group.ie_pl_type].push(group);
+    const tree = [];
+    let currentGroup = null;
+    let currentSubgroup = null;
+
+    for (const row of treeData) {
+      if (!currentGroup || currentGroup.id !== row.group_id) {
+        currentGroup = {
+          id: row.group_id,
+          name: row.group_name,
+          display_order: row.group_order,
+          ledger_count: 0,
+          subgroups: []
+        };
+        tree.push(currentGroup);
       }
+
+      if (!currentSubgroup || currentSubgroup.id !== row.subgroup_id) {
+        currentSubgroup = {
+          id: row.subgroup_id,
+          name: row.subgroup_name,
+          display_order: row.subgroup_order,
+          ledger_count: 0,
+          sub_subgroups: []
+        };
+        currentGroup.subgroups.push(currentSubgroup);
+      }
+
+      const ssg = {
+        id: row.sub_subgroup_id,
+        name: row.sub_subgroup_name,
+        display_order: row.sub_subgroup_order,
+        ledger_count: row.ssg_ledger_count
+      };
+      
+      currentSubgroup.sub_subgroups.push(ssg);
+      currentSubgroup.ledger_count += ssg.ledger_count;
+      currentGroup.ledger_count += ssg.ledger_count;
     }
 
-    res.json(grouped);
+    res.json(tree);
   } catch (err) {
-    console.error('Groups list error:', err);
+    console.error('Groups tree error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// POST /api/audit/:id/groups
-router.post('/:id/groups', (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// SUBGROUP & SUB-SUBGROUP CRUD
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/audit/:id/subgroups
+router.post('/:id/subgroups', (req, res) => {
   try {
-    const engagement = db.prepare('SELECT * FROM audit_engagements WHERE id = ?').get(req.params.id);
+    const engagement = db.prepare('SELECT id FROM audit_engagements WHERE id = ?').get(req.params.id);
     if (!engagement) return res.status(404).json({ error: 'Engagement not found' });
 
-    const { ie_pl_type, group_code, group_name, subgroup_code, subgroup_name, display_order } = req.body;
-
-    if (!ie_pl_type || !group_code || !group_name || !subgroup_code || !subgroup_name) {
-      return res.status(400).json({ error: 'ie_pl_type, group_code, group_name, subgroup_code, and subgroup_name are required' });
+    const { group_id, name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+      return res.status(400).json({ error: 'Name is required' });
     }
 
-    if (!VALID_IE_PL_TYPES.includes(ie_pl_type)) {
-      return res.status(400).json({ error: `Invalid ie_pl_type. Must be one of: ${VALID_IE_PL_TYPES.join(', ')}` });
-    }
+    const group = db.prepare('SELECT id FROM groups WHERE id = ? AND engagement_id = ?').get(group_id, req.params.id);
+    if (!group) return res.status(404).json({ error: 'Group not found in this engagement' });
 
-    const result = db.prepare(`
-      INSERT INTO ie_pl_groups (engagement_id, ie_pl_type, group_code, group_name, subgroup_code, subgroup_name, display_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(req.params.id, ie_pl_type, group_code, group_name, subgroup_code, subgroup_name, display_order || 0);
+    const maxOrderRes = db.prepare('SELECT MAX(display_order) as max_order FROM subgroups WHERE group_id = ?').get(group_id);
+    const display_order = maxOrderRes.max_order !== null ? maxOrderRes.max_order + 1 : 0;
 
-    const group = db.prepare('SELECT * FROM ie_pl_groups WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json(group);
+    const insert = db.prepare('INSERT INTO subgroups (group_id, name, display_order) VALUES (?, ?, ?)');
+    const info = insert.run(group_id, name.trim(), display_order);
+
+    res.status(201).json({ id: info.lastInsertRowid, group_id, name: name.trim(), display_order });
   } catch (err) {
-    console.error('Group create error:', err);
+    console.error('Create subgroup error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// PATCH /api/audit/:id/groups/:gid
-router.patch('/:id/groups/:gid', (req, res) => {
+// PATCH /api/audit/:id/subgroups/:sgid
+router.patch('/:id/subgroups/:sgid', (req, res) => {
   try {
-    const group = db.prepare('SELECT * FROM ie_pl_groups WHERE id = ? AND engagement_id = ?').get(req.params.gid, req.params.id);
-    if (!group) return res.status(404).json({ error: 'Group not found' });
-
-    const allowed = ['ie_pl_type', 'group_code', 'group_name', 'subgroup_code', 'subgroup_name', 'display_order'];
-    const updates = [];
-    const values = [];
-    for (const field of allowed) {
-      if (req.body[field] !== undefined) {
-        if (field === 'ie_pl_type' && !VALID_IE_PL_TYPES.includes(req.body[field])) {
-          return res.status(400).json({ error: `Invalid ie_pl_type. Must be one of: ${VALID_IE_PL_TYPES.join(', ')}` });
-        }
-        updates.push(`${field} = ?`);
-        values.push(req.body[field]);
-      }
+    const { name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+      return res.status(400).json({ error: 'Name is required' });
     }
 
-    if (updates.length === 0) {
-      return res.status(400).json({ error: 'No valid fields to update' });
-    }
+    const check = db.prepare(`
+      SELECT sg.id FROM subgroups sg
+      JOIN groups g ON sg.group_id = g.id
+      WHERE sg.id = ? AND g.engagement_id = ?
+    `).get(req.params.sgid, req.params.id);
 
-    values.push(req.params.gid, req.params.id);
-    db.prepare(`UPDATE ie_pl_groups SET ${updates.join(', ')} WHERE id = ? AND engagement_id = ?`).run(...values);
+    if (!check) return res.status(404).json({ error: 'Subgroup not found in this engagement' });
 
-    const updated = db.prepare('SELECT * FROM ie_pl_groups WHERE id = ?').get(req.params.gid);
+    db.prepare('UPDATE subgroups SET name = ? WHERE id = ?').run(name.trim(), req.params.sgid);
+    const updated = db.prepare('SELECT id, group_id, name, display_order FROM subgroups WHERE id = ?').get(req.params.sgid);
+
     res.json(updated);
   } catch (err) {
-    console.error('Group update error:', err);
+    console.error('Update subgroup error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// DELETE /api/audit/:id/groups/:gid
-router.delete('/:id/groups/:gid', (req, res) => {
+// DELETE /api/audit/:id/subgroups/:sgid
+router.delete('/:id/subgroups/:sgid', (req, res) => {
   try {
-    const group = db.prepare('SELECT * FROM ie_pl_groups WHERE id = ? AND engagement_id = ?').get(req.params.gid, req.params.id);
-    if (!group) return res.status(404).json({ error: 'Group not found' });
+    const check = db.prepare(`
+      SELECT sg.id FROM subgroups sg
+      JOIN groups g ON sg.group_id = g.id
+      WHERE sg.id = ? AND g.engagement_id = ?
+    `).get(req.params.sgid, req.params.id);
 
-    const mappedCount = db.prepare('SELECT COUNT(*) AS cnt FROM trial_balance_ledgers WHERE ie_pl_group_id = ?').get(req.params.gid);
-    if (mappedCount.cnt > 0) {
-      return res.status(400).json({ error: `Cannot delete group: ${mappedCount.cnt} ledger(s) are still mapped to it` });
+    if (!check) return res.status(404).json({ error: 'Subgroup not found in this engagement' });
+
+    let unmappedCount = 0;
+    const tx = db.transaction(() => {
+      const updateRes = db.prepare(`
+        UPDATE trial_balance_ledgers
+        SET sub_subgroup_id = NULL, is_mapped = 0
+        WHERE sub_subgroup_id IN (
+          SELECT id FROM sub_subgroups WHERE subgroup_id = ?
+        )
+      `).run(req.params.sgid);
+      unmappedCount = updateRes.changes;
+
+      db.prepare('DELETE FROM subgroups WHERE id = ?').run(req.params.sgid);
+    });
+    tx();
+
+    res.json({ success: true, unmapped_count: unmappedCount });
+  } catch (err) {
+    console.error('Delete subgroup error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/audit/:id/sub-subgroups
+router.post('/:id/sub-subgroups', (req, res) => {
+  try {
+    const { subgroup_id, name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+      return res.status(400).json({ error: 'Name is required' });
     }
 
-    db.prepare('DELETE FROM ie_pl_groups WHERE id = ? AND engagement_id = ?').run(req.params.gid, req.params.id);
-    res.json({ success: true });
+    const check = db.prepare(`
+      SELECT sg.id FROM subgroups sg
+      JOIN groups g ON sg.group_id = g.id
+      WHERE sg.id = ? AND g.engagement_id = ?
+    `).get(subgroup_id, req.params.id);
+
+    if (!check) return res.status(404).json({ error: 'Subgroup not found in this engagement' });
+
+    const maxOrderRes = db.prepare('SELECT MAX(display_order) as max_order FROM sub_subgroups WHERE subgroup_id = ?').get(subgroup_id);
+    const display_order = maxOrderRes.max_order !== null ? maxOrderRes.max_order + 1 : 0;
+
+    const insert = db.prepare('INSERT INTO sub_subgroups (subgroup_id, name, display_order) VALUES (?, ?, ?)');
+    const info = insert.run(subgroup_id, name.trim(), display_order);
+
+    res.status(201).json({ id: info.lastInsertRowid, subgroup_id, name: name.trim(), display_order });
   } catch (err) {
-    console.error('Group delete error:', err);
+    console.error('Create sub-subgroup error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// PATCH /api/audit/:id/sub-subgroups/:ssgid
+router.patch('/:id/sub-subgroups/:ssgid', (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const check = db.prepare(`
+      SELECT ssg.id FROM sub_subgroups ssg
+      JOIN subgroups sg ON ssg.subgroup_id = sg.id
+      JOIN groups g ON sg.group_id = g.id
+      WHERE ssg.id = ? AND g.engagement_id = ?
+    `).get(req.params.ssgid, req.params.id);
+
+    if (!check) return res.status(404).json({ error: 'Sub-subgroup not found in this engagement' });
+
+    db.prepare('UPDATE sub_subgroups SET name = ? WHERE id = ?').run(name.trim(), req.params.ssgid);
+    const updated = db.prepare('SELECT id, subgroup_id, name, display_order FROM sub_subgroups WHERE id = ?').get(req.params.ssgid);
+
+    res.json(updated);
+  } catch (err) {
+    console.error('Update sub-subgroup error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/audit/:id/sub-subgroups/:ssgid
+router.delete('/:id/sub-subgroups/:ssgid', (req, res) => {
+  try {
+    const check = db.prepare(`
+      SELECT ssg.id FROM sub_subgroups ssg
+      JOIN subgroups sg ON ssg.subgroup_id = sg.id
+      JOIN groups g ON sg.group_id = g.id
+      WHERE ssg.id = ? AND g.engagement_id = ?
+    `).get(req.params.ssgid, req.params.id);
+
+    if (!check) return res.status(404).json({ error: 'Sub-subgroup not found in this engagement' });
+
+    let unmappedCount = 0;
+    const tx = db.transaction(() => {
+      const updateRes = db.prepare(`
+        UPDATE trial_balance_ledgers
+        SET sub_subgroup_id = NULL, is_mapped = 0
+        WHERE sub_subgroup_id = ?
+      `).run(req.params.ssgid);
+      unmappedCount = updateRes.changes;
+
+      db.prepare('DELETE FROM sub_subgroups WHERE id = ?').run(req.params.ssgid);
+    });
+    tx();
+
+    res.json({ success: true, unmapped_count: unmappedCount });
+  } catch (err) {
+    console.error('Delete sub-subgroup error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LEDGER MAPPING
@@ -566,23 +713,37 @@ router.patch('/:id/ledgers/:lid/map', (req, res) => {
     const ledger = db.prepare('SELECT * FROM trial_balance_ledgers WHERE id = ? AND engagement_id = ?').get(req.params.lid, req.params.id);
     if (!ledger) return res.status(404).json({ error: 'Ledger not found' });
 
-    const { ie_pl_group_id } = req.body;
+    const { sub_subgroup_id } = req.body;
 
-    if (ie_pl_group_id !== null && ie_pl_group_id !== undefined) {
-      // Validate group exists and belongs to this engagement
-      const group = db.prepare('SELECT * FROM ie_pl_groups WHERE id = ? AND engagement_id = ?').get(ie_pl_group_id, req.params.id);
-      if (!group) return res.status(404).json({ error: 'IE/PL group not found' });
+    if (sub_subgroup_id !== null && sub_subgroup_id !== undefined) {
+      // Validate sub_subgroup exists and belongs to this engagement
+      const groupCheck = db.prepare(`
+        SELECT g.engagement_id
+        FROM sub_subgroups ssg
+        JOIN subgroups sg ON ssg.subgroup_id = sg.id
+        JOIN groups g ON sg.group_id = g.id
+        WHERE ssg.id = ?
+      `).get(sub_subgroup_id);
+      
+      if (!groupCheck || groupCheck.engagement_id != req.params.id) {
+        return res.status(404).json({ error: 'Sub-subgroup not found in this engagement' });
+      }
 
-      db.prepare('UPDATE trial_balance_ledgers SET ie_pl_group_id = ?, is_mapped = 1 WHERE id = ?').run(ie_pl_group_id, req.params.lid);
+      db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = ?, is_mapped = 1 WHERE id = ?').run(sub_subgroup_id, req.params.lid);
     } else {
       // Unmap
-      db.prepare('UPDATE trial_balance_ledgers SET ie_pl_group_id = NULL, is_mapped = 0 WHERE id = ?').run(req.params.lid);
+      db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = NULL, is_mapped = 0 WHERE id = ?').run(req.params.lid);
     }
 
     const updated = db.prepare(`
-      SELECT tb.*, g.ie_pl_type, g.group_code, g.group_name, g.subgroup_code, g.subgroup_name
+      SELECT tb.*,
+             g.id AS group_id, g.name AS group_name,
+             sg.id AS subgroup_id, sg.name AS subgroup_name,
+             ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name
       FROM trial_balance_ledgers tb
-      LEFT JOIN ie_pl_groups g ON tb.ie_pl_group_id = g.id
+      LEFT JOIN sub_subgroups ssg ON tb.sub_subgroup_id = ssg.id
+      LEFT JOIN subgroups sg ON ssg.subgroup_id = sg.id
+      LEFT JOIN groups g ON sg.group_id = g.id
       WHERE tb.id = ?
     `).get(req.params.lid);
 
@@ -596,27 +757,36 @@ router.patch('/:id/ledgers/:lid/map', (req, res) => {
 // POST /api/audit/:id/ledgers/bulk-map
 router.post('/:id/ledgers/bulk-map', (req, res) => {
   try {
-    const { ledger_ids, ie_pl_group_id } = req.body;
+    const { ledger_ids, sub_subgroup_id } = req.body;
 
     if (!Array.isArray(ledger_ids) || ledger_ids.length === 0) {
       return res.status(400).json({ error: 'ledger_ids must be a non-empty array' });
     }
 
-    if (ie_pl_group_id !== null && ie_pl_group_id !== undefined) {
-      const group = db.prepare('SELECT * FROM ie_pl_groups WHERE id = ? AND engagement_id = ?').get(ie_pl_group_id, req.params.id);
-      if (!group) return res.status(404).json({ error: 'IE/PL group not found' });
+    if (sub_subgroup_id !== null && sub_subgroup_id !== undefined) {
+      const groupCheck = db.prepare(`
+        SELECT g.engagement_id
+        FROM sub_subgroups ssg
+        JOIN subgroups sg ON ssg.subgroup_id = sg.id
+        JOIN groups g ON sg.group_id = g.id
+        WHERE ssg.id = ?
+      `).get(sub_subgroup_id);
+      
+      if (!groupCheck || groupCheck.engagement_id != req.params.id) {
+        return res.status(404).json({ error: 'Sub-subgroup not found in this engagement' });
+      }
     }
 
-    const updateStmt = ie_pl_group_id !== null && ie_pl_group_id !== undefined
-      ? db.prepare('UPDATE trial_balance_ledgers SET ie_pl_group_id = ?, is_mapped = 1 WHERE id = ? AND engagement_id = ?')
-      : db.prepare('UPDATE trial_balance_ledgers SET ie_pl_group_id = NULL, is_mapped = 0 WHERE id = ? AND engagement_id = ?');
+    const updateStmt = sub_subgroup_id !== null && sub_subgroup_id !== undefined
+      ? db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = ?, is_mapped = 1 WHERE id = ? AND engagement_id = ?')
+      : db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = NULL, is_mapped = 0 WHERE id = ? AND engagement_id = ?');
 
     let updated = 0;
     const bulkMapTx = db.transaction(() => {
       for (const lid of ledger_ids) {
         let result;
-        if (ie_pl_group_id !== null && ie_pl_group_id !== undefined) {
-          result = updateStmt.run(ie_pl_group_id, lid, req.params.id);
+        if (sub_subgroup_id !== null && sub_subgroup_id !== undefined) {
+          result = updateStmt.run(sub_subgroup_id, lid, req.params.id);
         } else {
           result = updateStmt.run(lid, req.params.id);
         }
@@ -1074,9 +1244,13 @@ router.post('/:id/entries/:eid/reject', (req, res) => {
 function computeAdjustedTB(engagementId) {
   const ledgers = db.prepare(`
     SELECT tb.*,
-           g.ie_pl_type, g.group_code, g.group_name, g.subgroup_code, g.subgroup_name
+           g.id AS group_id, g.name AS group_name,
+           sg.id AS subgroup_id, sg.name AS subgroup_name,
+           ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name
     FROM trial_balance_ledgers tb
-    LEFT JOIN ie_pl_groups g ON tb.ie_pl_group_id = g.id
+    LEFT JOIN sub_subgroups ssg ON tb.sub_subgroup_id = ssg.id
+    LEFT JOIN subgroups sg ON ssg.subgroup_id = sg.id
+    LEFT JOIN groups g ON sg.group_id = g.id
     WHERE tb.engagement_id = ?
     ORDER BY tb.ledger_code ASC
   `).all(engagementId);
@@ -1173,36 +1347,34 @@ function buildFinancialSections(engagementId) {
 
   const sections = {};
   for (const type of VALID_IE_PL_TYPES) {
-    sections[type] = { groups: {}, total: 0 };
+    sections[type] = { subgroups: {}, total: 0 };
   }
 
   for (const ledger of ledgers) {
-    if (!ledger.ie_pl_type) continue; // unmapped ledgers
+    if (!ledger.group_name) continue; // unmapped ledgers
 
-    const section = sections[ledger.ie_pl_type];
+    const section = sections[ledger.group_name];
     if (!section) continue;
 
-    const groupKey = `${ledger.group_code} - ${ledger.group_name}`;
-    if (!section.groups[groupKey]) {
-      section.groups[groupKey] = {
-        group_code: ledger.group_code,
-        group_name: ledger.group_name,
-        subgroups: {},
+    const subgroupKey = ledger.subgroup_name;
+    if (!section.subgroups[subgroupKey]) {
+      section.subgroups[subgroupKey] = {
+        subgroup_name: ledger.subgroup_name,
+        subSubgroups: {},
         total: 0
       };
     }
 
-    const subgroupKey = `${ledger.subgroup_code} - ${ledger.subgroup_name}`;
-    if (!section.groups[groupKey].subgroups[subgroupKey]) {
-      section.groups[groupKey].subgroups[subgroupKey] = {
-        subgroup_code: ledger.subgroup_code,
-        subgroup_name: ledger.subgroup_name,
+    const subSubgroupKey = ledger.sub_subgroup_name;
+    if (!section.subgroups[subgroupKey].subSubgroups[subSubgroupKey]) {
+      section.subgroups[subgroupKey].subSubgroups[subSubgroupKey] = {
+        sub_subgroup_name: ledger.sub_subgroup_name,
         ledgers: [],
         total: 0
       };
     }
 
-    section.groups[groupKey].subgroups[subgroupKey].ledgers.push({
+    section.subgroups[subgroupKey].subSubgroups[subSubgroupKey].ledgers.push({
       id: ledger.id,
       ledger_code: ledger.ledger_code,
       ledger_name: ledger.ledger_name,
@@ -1211,18 +1383,18 @@ function buildFinancialSections(engagementId) {
       adjusted_closing: ledger.adjusted_closing
     });
 
-    section.groups[groupKey].subgroups[subgroupKey].total += ledger.adjusted_closing;
-    section.groups[groupKey].total += ledger.adjusted_closing;
+    section.subgroups[subgroupKey].subSubgroups[subSubgroupKey].total += ledger.adjusted_closing;
+    section.subgroups[subgroupKey].total += ledger.adjusted_closing;
     section.total += ledger.adjusted_closing;
   }
 
   // Round totals
   for (const type of VALID_IE_PL_TYPES) {
     sections[type].total = Math.round(sections[type].total * 100) / 100;
-    for (const gk of Object.keys(sections[type].groups)) {
-      sections[type].groups[gk].total = Math.round(sections[type].groups[gk].total * 100) / 100;
-      for (const sk of Object.keys(sections[type].groups[gk].subgroups)) {
-        sections[type].groups[gk].subgroups[sk].total = Math.round(sections[type].groups[gk].subgroups[sk].total * 100) / 100;
+    for (const sgk of Object.keys(sections[type].subgroups)) {
+      sections[type].subgroups[sgk].total = Math.round(sections[type].subgroups[sgk].total * 100) / 100;
+      for (const ssgk of Object.keys(sections[type].subgroups[sgk].subSubgroups)) {
+        sections[type].subgroups[sgk].subSubgroups[ssgk].total = Math.round(sections[type].subgroups[sgk].subSubgroups[ssgk].total * 100) / 100;
       }
     }
   }
@@ -1496,21 +1668,28 @@ router.post('/:id/report/generate', async (req, res) => {
         })
       ];
 
-      for (const gk of Object.keys(section.groups)) {
-        const group = section.groups[gk];
+      for (const sgk of Object.keys(section.subgroups)) {
+        const subgroup = section.subgroups[sgk];
         rows.push(new TableRow({
           children: [
-            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `${group.group_code} - ${group.group_name}`, bold: true })] })] }),
-            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: group.total.toFixed(2) })] })] })
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: subgroup.subgroup_name, bold: true })] })] }),
+            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: subgroup.total.toFixed(2) })] })] })
           ]
         }));
 
-        for (const sk of Object.keys(group.subgroups)) {
-          const subgroup = group.subgroups[sk];
-          for (const ledger of subgroup.ledgers) {
+        for (const ssgk of Object.keys(subgroup.subSubgroups)) {
+          const subSubgroup = subgroup.subSubgroups[ssgk];
+          rows.push(new TableRow({
+            children: [
+              new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `    ${subSubgroup.sub_subgroup_name}`, bold: true })] })] }),
+              new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: subSubgroup.total.toFixed(2) })] })] })
+            ]
+          }));
+
+          for (const ledger of subSubgroup.ledgers) {
             rows.push(new TableRow({
               children: [
-                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `    ${ledger.ledger_code} - ${ledger.ledger_name}` })] })] }),
+                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `        ${ledger.ledger_code} - ${ledger.ledger_name}` })] })] }),
                 new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: ledger.adjusted_closing.toFixed(2) })] })] })
               ]
             }));
