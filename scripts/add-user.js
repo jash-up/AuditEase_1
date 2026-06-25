@@ -4,6 +4,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const Database = require('better-sqlite3');
 const bcrypt = require('bcrypt');
 const path = require('path');
+const { VALID_ROLES } = require('../backend/constants');
 
 const SALT_ROUNDS = 12;
 const DB_PATH = path.join(__dirname, '..', 'auditease.db');
@@ -18,9 +19,16 @@ function getArg(flag) {
 const name = getArg('--name');
 const username = getArg('--username');
 const password = getArg('--password');
+const roleArg = getArg('--role');
 
 if (!name || !username || !password) {
-  console.error('Usage: node scripts/add-user.js --name "John Doe" --username johndoe --password secret123');
+  console.error('Usage: node scripts/add-user.js --name "John Doe" --username johndoe --password secret123 [--role company|auditor]');
+  process.exit(1);
+}
+
+const role = roleArg || 'company';
+if (!VALID_ROLES.includes(role)) {
+  console.error(`❌ Error: Invalid role "${role}". Valid roles are: ${VALID_ROLES.join(', ')}`);
   process.exit(1);
 }
 
@@ -38,13 +46,14 @@ if (!name || !username || !password) {
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
     const result = db.prepare(
-      'INSERT INTO users (name, username, password_hash) VALUES (?, ?, ?)'
-    ).run(name, username, passwordHash);
+      'INSERT INTO users (name, username, password_hash, role) VALUES (?, ?, ?, ?)'
+    ).run(name, username, passwordHash, role);
 
     console.log(`✅ User created successfully!`);
     console.log(`   ID:       ${result.lastInsertRowid}`);
     console.log(`   Name:     ${name}`);
     console.log(`   Username: ${username}`);
+    console.log(`   Role:     ${role}`);
     db.close();
   } catch (err) {
     console.error('❌ Failed to create user:', err.message);

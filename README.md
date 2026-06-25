@@ -83,8 +83,9 @@ npm run list-users
 ### 2. Add a New User
 Create a new user with a hashed password:
 ```bash
-npm run add-user -- --name "John Doe" --username johndoe --password securepass123
+npm run add-user -- --name "John Doe" --username johndoe --password securepass123 --role auditor
 ```
+types of roles: company(default) and auditor
 
 ### 3. Change a User's Password
 Update the password of an existing user securely:
@@ -92,7 +93,13 @@ Update the password of an existing user securely:
 npm run change-password -- --username johndoe --password newsecurepass123
 ```
 
-### 4. Delete a User
+### 4. Update a User's Role
+Change the role of a user (valid roles are `company` and `auditor`):
+```bash
+npm run update-role -- --username johndoe --role auditor
+```
+
+### 5. Delete a User
 Remove a user from the system safely (fails if they have active document records linked to them):
 ```bash
 npm run delete-user -- --username johndoe

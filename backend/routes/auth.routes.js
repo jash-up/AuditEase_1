@@ -29,7 +29,7 @@ router.post('/login', async (req, res) => {
 
     res.json({
       token,
-      user: { id: user.id, name: user.name, username: user.username }
+      user: { id: user.id, name: user.name, username: user.username, role: user.role }
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -46,7 +46,7 @@ router.get('/me', (req, res) => {
   const token = authHeader.slice(7);
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = db.prepare('SELECT id, name, username FROM users WHERE id = ?').get(decoded.id);
+    const user = db.prepare('SELECT id, name, username, role FROM users WHERE id = ?').get(decoded.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
   } catch (err) {

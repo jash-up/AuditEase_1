@@ -9,6 +9,7 @@
     "add-user": "node scripts/add-user.js",
     "delete-user": "node scripts/delete-user.js",
     "change-password": "node scripts/change-password.js",
+    "update-role": "node scripts/update-role.js",
     "list-users": "node scripts/list-users.js",
     "postinstall": "echo 'Install complete. If bcrypt or better-sqlite3 failed to build, see README.md Troubleshooting section.'"
   },

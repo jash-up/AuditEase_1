@@ -14,7 +14,7 @@ function requireAuth(req, res, next) {
     if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET not set in environment.');
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = db.prepare('SELECT id, name, username FROM users WHERE id = ?').get(decoded.id);
+    const user = db.prepare('SELECT id, name, username, role FROM users WHERE id = ?').get(decoded.id);
     if (!user) {
       return res.status(401).json({ error: 'Invalid or expired session. Please sign in again.' });
     }

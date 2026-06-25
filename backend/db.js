@@ -24,7 +24,8 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'company'
   );
 
   CREATE TABLE IF NOT EXISTS documents (
@@ -201,6 +202,18 @@ function migrateTrialBalanceUniqueness() {
   }
 }
 
+// Migration: add role to users
+function migrateUsersAddRole() {
+  const tableInfo = db.pragma('table_info(users)');
+  const hasRole = tableInfo.some(col => col.name === 'role');
+  if (!hasRole) {
+    console.log('[Migration] Adding role column to users table...');
+    db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'company'`);
+    console.log('[Migration] role column added.');
+  }
+}
+
 migrateTrialBalanceUniqueness();
+migrateUsersAddRole();
 
 module.exports = db;
