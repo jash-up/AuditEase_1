@@ -1862,6 +1862,21 @@ router.patch('/:id/queries/:qid/reopen', (req, res) => {
   }
 });
 
+// PATCH /api/audit/:id/queries/:qid/close
+router.patch('/:id/queries/:qid/close', (req, res) => {
+  try {
+    const query = db.prepare('SELECT * FROM audit_queries WHERE id = ? AND engagement_id = ?').get(req.params.qid, req.params.id);
+    if (!query) return res.status(404).json({ error: 'Query not found' });
+
+    const now = new Date().toISOString();
+    db.prepare("UPDATE audit_queries SET status = 'Closed', updated_at = ? WHERE id = ?").run(now, req.params.qid);
+    res.json({ success: true, status: 'Closed' });
+  } catch (err) {
+    console.error('Query close error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/audit/:id/queries/:qid/replies/:rid/download
 router.get('/:id/queries/:qid/replies/:rid/download', (req, res) => {
   try {

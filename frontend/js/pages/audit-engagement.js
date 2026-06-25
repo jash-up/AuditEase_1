@@ -83,9 +83,8 @@
 
       renderHeader();
       renderPipeline();
-      renderStats(pendingReviewCount);
+      renderStats(pendingReviewCount, openQueriesCount);
       renderQuickActions();
-      renderOpenQueriesRow(openQueriesCount);
       loadAndRenderAuditors();
     } catch (e) {
       console.error(e);
@@ -177,7 +176,7 @@
     container.innerHTML = stepsHtml;
   }
 
-  function renderStats(pendingReviewCount) {
+  function renderStats(pendingReviewCount, openQueriesCount = 0) {
     const container = document.getElementById('stat-cards');
     if (!container) return;
 
@@ -189,6 +188,10 @@
     const pendingSub = pendingReviewCount > 0
       ? `<div class="stat-card-sub" style="color: var(--status-action); font-weight: 500;">${pendingReviewCount} pending review</div>`
       : `<div class="stat-card-sub">No pending entries</div>`;
+
+    const queriesSub = openQueriesCount > 0
+      ? `<div class="stat-card-sub" style="color: var(--status-action); font-weight: 500;">Needs attention</div>`
+      : `<div class="stat-card-sub" style="color: var(--status-verified);">All resolved</div>`;
 
     const statusMap = {
       'Active': 'Active',
@@ -217,6 +220,11 @@
         <div class="stat-card-label">Approved Entries</div>
         <div class="stat-card-sub">Included in Adjusted TB</div>
       </div>
+      <a href="/audit/queries.html?id=${engagementId}" class="stat-card" style="text-decoration: none; display: block; transition: border-color 150ms ease;">
+        <div class="stat-card-value" style="color: ${openQueriesCount > 0 ? 'var(--status-action)' : 'var(--text-primary)'};">${openQueriesCount}</div>
+        <div class="stat-card-label">Open Queries</div>
+        ${queriesSub}
+      </a>
       <div class="stat-card">
         <div class="stat-card-value" style="font-size: 20px; word-break: break-all;">${window.AE.escapeHtml(friendlyStatus)}</div>
         <div class="stat-card-label">Engagement Status</div>
@@ -348,15 +356,7 @@
     }
   }
 
-  function renderOpenQueriesRow(count) {
-    const el = document.getElementById('open-queries-row');
-    if (!el) return;
-    if (count === 0) {
-      el.innerHTML = `<a href="/audit/queries.html?id=${engagementId}" style="font-size:13px;color:var(--text-secondary);text-decoration:none;">Queries — <span style="color:var(--status-verified);">No open queries</span> &rarr;</a>`;
-    } else {
-      el.innerHTML = `<a href="/audit/queries.html?id=${engagementId}" style="font-size:13px;font-weight:500;color:var(--status-action);text-decoration:none;">⚠ ${count} open ${count === 1 ? 'query' : 'queries'} — click to view &rarr;</a>`;
-    }
-  }
+
 
   async function loadAndRenderAuditors() {
     const container = document.getElementById('auditors-container');

@@ -160,11 +160,14 @@
 /* ── Stat Cards Row ─────────────────────────────── */
 .stat-cards {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 20px;
   margin-bottom: 24px;
 }
-/* If 4 columns feel cramped at the new width, allow wrapping at 2x2 on medium screens */
+/* If 5 columns feel cramped at the new width, allow wrapping on medium screens */
+@media (max-width: 1200px) {
+  .stat-cards { grid-template-columns: repeat(3, 1fr); }
+}
 @media (max-width: 900px) {
   .stat-cards { grid-template-columns: repeat(2, 1fr); }
 }
@@ -978,6 +981,11 @@
 .query-status-resolved {
   background: rgba(16, 185, 129, 0.15);
   color: var(--status-verified);
+}
+
+.query-status-closed {
+  background: var(--bg-raised);
+  color: var(--text-muted);
 }
 
 /* ── Thread Header ───────────────────────────────── */

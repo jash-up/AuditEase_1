@@ -88,12 +88,13 @@
     body.innerHTML = allQueries.map(q => {
       const isActive = q.id === currentQueryId;
       const isOpen = q.status === 'Open';
+      const statusClass = isOpen ? 'query-status-open' : (q.status === 'Resolved' ? 'query-status-resolved' : 'query-status-closed');
       const lastActivity = q.last_reply_at || q.created_at;
       return `
         <div class="query-card ${isActive ? 'active' : ''}" data-id="${q.id}">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px;">
             <span class="query-type-badge">${window.AE.escapeHtml(q.query_type)}</span>
-            <span class="query-status-badge ${isOpen ? 'query-status-open' : 'query-status-resolved'}">${isOpen ? 'Open' : 'Resolved'}</span>
+            <span class="query-status-badge ${statusClass}">${window.AE.escapeHtml(q.status)}</span>
           </div>
           <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:4px;line-height:1.3;">
             ${window.AE.escapeHtml(q.subject)}
@@ -149,6 +150,8 @@
     if (!right) return;
 
     const isOpen = query.status === 'Open';
+    const isClosed = query.status === 'Closed';
+    const statusClass = isOpen ? 'query-status-open' : (query.status === 'Resolved' ? 'query-status-resolved' : 'query-status-closed');
     const isAuditor = currentUser && currentUser.role === 'auditor';
 
     const repliesHtml = query.replies.length === 0
@@ -160,14 +163,15 @@
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
             <span class="query-type-badge">${window.AE.escapeHtml(query.query_type)}</span>
-            <span class="query-status-badge ${isOpen ? 'query-status-open' : 'query-status-resolved'}">${isOpen ? 'Open' : 'Resolved'}</span>
+            <span class="query-status-badge ${statusClass}">${window.AE.escapeHtml(query.status)}</span>
           </div>
           <h2 style="font-size:16px;font-weight:700;color:var(--text-primary);margin:0;line-height:1.3;">${window.AE.escapeHtml(query.subject)}</h2>
           <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
             Raised by <strong>${window.AE.escapeHtml(query.raised_by_name)}</strong> · ${formatDate(query.created_at)}
           </div>
         </div>
-        <div style="flex-shrink:0;">
+        <div style="flex-shrink:0; display:flex; gap:8px;">
+          ${!isClosed ? `<button class="btn btn-ghost" id="btn-close" style="font-size:12px;padding:6px 14px;border:1px solid var(--border);">Close</button>` : ''}
           ${isAuditor && isOpen ? `<button class="btn btn-secondary" id="btn-resolve" style="font-size:12px;padding:6px 14px;">Mark Resolved</button>` : ''}
           ${isAuditor && !isOpen ? `<button class="btn btn-secondary" id="btn-reopen" style="font-size:12px;padding:6px 14px;">Reopen</button>` : ''}
         </div>
@@ -190,7 +194,7 @@
               ${currentUser ? window.AE.escapeHtml(currentUser.name.slice(0,1).toUpperCase()) : '?'}
             </div>
             <div style="flex:1;min-width:0;">
-              <textarea id="reply-text" placeholder="${isOpen ? 'Write a reply…' : 'This query is resolved. Reopen to reply.'}" rows="3" 
+              <textarea id="reply-text" placeholder="${isOpen ? 'Write a reply…' : (isClosed ? 'This query is closed.' : 'This query is resolved. Reopen to reply.')}" rows="3" 
                 style="width:100%;resize:vertical;min-height:72px;border-radius:6px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);padding:10px 12px;font-size:13px;font-family:inherit;line-height:1.5;"
                 ${!isOpen ? 'disabled' : ''}></textarea>
               <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;">
@@ -223,7 +227,8 @@
     // Send reply
     right.querySelector('#btn-send-reply')?.addEventListener('click', () => sendReply(query.id));
 
-    // Resolve / Reopen
+    // Resolve / Reopen / Close
+    right.querySelector('#btn-close')?.addEventListener('click', () => closeQuery(query.id));
     right.querySelector('#btn-resolve')?.addEventListener('click', () => resolveQuery(query.id));
     right.querySelector('#btn-reopen')?.addEventListener('click', () => reopenQuery(query.id));
 
@@ -315,6 +320,15 @@
       const res = await window.AE.apiFetch(`/api/audit/${engagementId}/queries/${queryId}/resolve`, { method: 'PATCH' });
       if (res.ok) await loadQueries(queryId);
       else { const e = await res.json().catch(()=>({})); alert(e.error || 'Failed to resolve.'); }
+    } catch (e) { alert('Network error.'); }
+  }
+
+  async function closeQuery(queryId) {
+    if (!confirm('Close this query? It will be marked as closed.')) return;
+    try {
+      const res = await window.AE.apiFetch(`/api/audit/${engagementId}/queries/${queryId}/close`, { method: 'PATCH' });
+      if (res.ok) await loadQueries(queryId);
+      else { const e = await res.json().catch(()=>({})); alert(e.error || 'Failed to close.'); }
     } catch (e) { alert('Network error.'); }
   }
 
