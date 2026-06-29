@@ -202,47 +202,59 @@ db.exec(`
 
 // Migration: fix trial_balance_ledgers uniqueness constraint
 function migrateTrialBalanceUniqueness() {
-  const tableInfo = db.prepare(`
-    SELECT sql FROM sqlite_master WHERE type='table' AND name='trial_balance_ledgers'
+  const tableExists = db.prepare(`
+    SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='trial_balance_ledgers'
   `).get();
+  if (tableExists.cnt === 0) return; // fresh install, nothing to migrate
 
-  if (tableInfo && tableInfo.sql.includes('UNIQUE(engagement_id, ledger_code)') 
-      && !tableInfo.sql.includes('UNIQUE(engagement_id, ledger_code, ledger_name)')) {
-    
-    console.log('[Migration] Fixing trial_balance_ledgers uniqueness constraint...');
-    
-    db.exec(`
-      BEGIN TRANSACTION;
+  const indexes = db.prepare(`PRAGMA index_list(trial_balance_ledgers)`).all();
+  const uniqueIndexes = indexes.filter(i => i.unique === 1);
 
-      CREATE TABLE trial_balance_ledgers_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
-        ledger_code TEXT NOT NULL,
-        ledger_name TEXT NOT NULL,
-        opening_balance REAL NOT NULL DEFAULT 0,
-        debit_transactions REAL NOT NULL DEFAULT 0,
-        credit_transactions REAL NOT NULL DEFAULT 0,
-        closing_balance REAL NOT NULL DEFAULT 0,
-        ie_pl_group_id INTEGER REFERENCES ie_pl_groups(id),
-        is_mapped INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        UNIQUE(engagement_id, ledger_code, ledger_name)
-      );
+  // Check if any unique index already covers exactly (ledger_code, ledger_name) alongside engagement_id
+  const alreadyMigrated = uniqueIndexes.some(idx => {
+    const cols = db.prepare(`PRAGMA index_info(${idx.name})`).all().map(c => c.name);
+    return cols.includes('ledger_code') && cols.includes('ledger_name') && cols.includes('engagement_id');
+  });
 
-      INSERT INTO trial_balance_ledgers_new 
-        SELECT id, engagement_id, ledger_code, ledger_name, opening_balance,
-               debit_transactions, credit_transactions, closing_balance,
-               ie_pl_group_id, is_mapped, created_at
-        FROM trial_balance_ledgers;
+  if (alreadyMigrated) return;
 
-      DROP TABLE trial_balance_ledgers;
-      ALTER TABLE trial_balance_ledgers_new RENAME TO trial_balance_ledgers;
+  console.log('[Migration] Fixing trial_balance_ledgers uniqueness constraint...');
 
-      COMMIT;
-    `);
-    
-    console.log('[Migration] trial_balance_ledgers uniqueness fixed.');
-  }
+  db.exec(`PRAGMA foreign_keys = OFF;`);
+
+  db.exec(`
+    BEGIN TRANSACTION;
+
+    CREATE TABLE trial_balance_ledgers_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+      ledger_code TEXT NOT NULL,
+      ledger_name TEXT NOT NULL,
+      opening_balance REAL NOT NULL DEFAULT 0,
+      debit_transactions REAL NOT NULL DEFAULT 0,
+      credit_transactions REAL NOT NULL DEFAULT 0,
+      closing_balance REAL NOT NULL DEFAULT 0,
+      ie_pl_group_id INTEGER REFERENCES ie_pl_groups(id),
+      is_mapped INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(engagement_id, ledger_code, ledger_name)
+    );
+
+    INSERT INTO trial_balance_ledgers_new 
+      SELECT id, engagement_id, ledger_code, ledger_name, opening_balance,
+             debit_transactions, credit_transactions, closing_balance,
+             ie_pl_group_id, is_mapped, created_at
+      FROM trial_balance_ledgers;
+
+    DROP TABLE trial_balance_ledgers;
+    ALTER TABLE trial_balance_ledgers_new RENAME TO trial_balance_ledgers;
+
+    COMMIT;
+  `);
+
+  db.exec(`PRAGMA foreign_keys = ON;`);
+
+  console.log('[Migration] trial_balance_ledgers uniqueness fixed.');
 }
 
 // Migration: add role to users
@@ -302,47 +314,65 @@ migrateGroupsHierarchy();
 migrateUsersAddRole();
 
 function migrateLedgerCodeNameNullable() {
-  const tableInfo = db.prepare(`
-    SELECT sql FROM sqlite_master WHERE type='table' AND name='trial_balance_ledgers'
-  `).get();
+  // Reliable check: does ledger_code currently have notnull = 1 (i.e. still NOT NULL,
+  // unmigrated) or notnull = 0 (already relaxed, migration already done)?
+  // Also check if default value is set to '' (i.e. dflt_value === "''") which represents the migrated state.
+  const columns = db.prepare(`PRAGMA table_info(trial_balance_ledgers)`).all();
+  const ledgerCodeCol = columns.find(c => c.name === 'ledger_code');
 
-  if (tableInfo && tableInfo.sql.includes('ledger_code TEXT NOT NULL,') 
-      && !tableInfo.sql.includes("ledger_code TEXT NOT NULL DEFAULT ''")) {
-    
-    console.log('[Migration] Allowing blank ledger_code/ledger_name in trial_balance_ledgers...');
-
-    db.exec(`
-      BEGIN TRANSACTION;
-
-      CREATE TABLE trial_balance_ledgers_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
-        ledger_code TEXT NOT NULL DEFAULT '',
-        ledger_name TEXT NOT NULL DEFAULT '',
-        opening_balance REAL NOT NULL DEFAULT 0,
-        debit_transactions REAL NOT NULL DEFAULT 0,
-        credit_transactions REAL NOT NULL DEFAULT 0,
-        closing_balance REAL NOT NULL DEFAULT 0,
-        sub_subgroup_id INTEGER REFERENCES sub_subgroups(id),
-        is_mapped INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        UNIQUE(engagement_id, ledger_code, ledger_name)
-      );
-
-      INSERT INTO trial_balance_ledgers_new 
-        SELECT id, engagement_id, ledger_code, ledger_name, opening_balance,
-               debit_transactions, credit_transactions, closing_balance,
-               sub_subgroup_id, is_mapped, created_at
-        FROM trial_balance_ledgers;
-
-      DROP TABLE trial_balance_ledgers;
-      ALTER TABLE trial_balance_ledgers_new RENAME TO trial_balance_ledgers;
-
-      COMMIT;
-    `);
-
-    console.log('[Migration] ledger_code/ledger_name now allow blank values.');
+  // If the table doesn't exist yet at all (fresh install), nothing to migrate —
+  // CREATE TABLE IF NOT EXISTS will already create it in the correct final shape.
+  if (!ledgerCodeCol) {
+    return;
   }
+
+  // notnull === 0 means the column is already nullable-with-default — migration
+  // already happened (or this is a fresh DB that was created post-fix).
+  // dflt_value === "''" means it already has the default value from the migration. Skip.
+  if (ledgerCodeCol.notnull === 0 || ledgerCodeCol.dflt_value === "''") {
+    return;
+  }
+
+  console.log('[Migration] Allowing blank ledger_code/ledger_name in trial_balance_ledgers...');
+
+  // Temporarily disable foreign key enforcement for this transaction — required
+  // because the recreate-and-copy pattern (DROP + RENAME) can otherwise trip
+  // foreign key checks mid-transaction even when the end state is fully valid.
+  db.exec(`PRAGMA foreign_keys = OFF;`);
+
+  db.exec(`
+    BEGIN TRANSACTION;
+
+    CREATE TABLE trial_balance_ledgers_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+      ledger_code TEXT NOT NULL DEFAULT '',
+      ledger_name TEXT NOT NULL DEFAULT '',
+      opening_balance REAL NOT NULL DEFAULT 0,
+      debit_transactions REAL NOT NULL DEFAULT 0,
+      credit_transactions REAL NOT NULL DEFAULT 0,
+      closing_balance REAL NOT NULL DEFAULT 0,
+      sub_subgroup_id INTEGER REFERENCES sub_subgroups(id),
+      is_mapped INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(engagement_id, ledger_code, ledger_name)
+    );
+
+    INSERT INTO trial_balance_ledgers_new 
+      SELECT id, engagement_id, ledger_code, ledger_name, opening_balance,
+             debit_transactions, credit_transactions, closing_balance,
+             sub_subgroup_id, is_mapped, created_at
+      FROM trial_balance_ledgers;
+
+    DROP TABLE trial_balance_ledgers;
+    ALTER TABLE trial_balance_ledgers_new RENAME TO trial_balance_ledgers;
+
+    COMMIT;
+  `);
+
+  db.exec(`PRAGMA foreign_keys = ON;`);
+
+  console.log('[Migration] ledger_code/ledger_name now allow blank values.');
 }
 migrateLedgerCodeNameNullable();
 
