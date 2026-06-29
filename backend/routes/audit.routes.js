@@ -223,6 +223,68 @@ router.post('/:id/trial-balance/preview', upload.single('file'), (req, res) => {
     // Data rows = everything after the header row
     const dataRows = rawRows.slice(headerRowIndex + 1);
 
+    let fullTotals = null;
+    if (req.body.column_map) {
+      let columnMap = null;
+      try {
+        columnMap = JSON.parse(req.body.column_map);
+      } catch (e) {
+        // ignore
+      }
+
+      if (columnMap) {
+        const parseNum = (v) => {
+          if (v === '' || v === null || v === undefined) return 0;
+          const cleaned = String(v).replace(/[,₹\s\u00A0]/g, '');
+          const num = parseFloat(cleaned);
+          return isNaN(num) ? 0 : num;
+        };
+
+        let totalDebit = 0;
+        let totalCredit = 0;
+        let validRowCount = 0;
+
+        dataRows.forEach(row => {
+          const code = (columnMap.ledger_code !== null && columnMap.ledger_code !== undefined)
+            ? String(row[columnMap.ledger_code] ?? '').trim()
+            : '';
+
+          // Apply the SAME skip logic that import itself uses, so the balance check reflects
+          // exactly what will actually be imported — not rows that will be skipped as
+          // group/subtotal rows. (Skip this entire block if ledger_code isn't mapped at all,
+          // matching the optional-code behavior from the earlier fix.)
+          const codeWasMapped = columnMap.ledger_code !== null && columnMap.ledger_code !== undefined;
+          if (codeWasMapped && !code) {
+            return; // matches import's skippedBlank behavior — don't count subtotal rows
+          }
+
+          // Also check for optional name skip logic:
+          const name = (columnMap.ledger_name !== null && columnMap.ledger_name !== undefined)
+            ? String(row[columnMap.ledger_name] ?? '').trim()
+            : '';
+          const nameWasMapped = columnMap.ledger_name !== null && columnMap.ledger_name !== undefined;
+          if (nameWasMapped && !name) {
+            return; // matches import's skipped blank name behavior
+          }
+
+          totalDebit += parseNum(row[columnMap.debit_transactions]);
+          totalCredit += parseNum(row[columnMap.credit_transactions]);
+          validRowCount++;
+        });
+
+        const difference = Math.round((totalDebit - totalCredit) * 100) / 100;
+        const isBalanced = Math.abs(difference) < 0.01;
+
+        fullTotals = {
+          total_debit: Math.round(totalDebit * 100) / 100,
+          total_credit: Math.round(totalCredit * 100) / 100,
+          difference: difference,
+          is_balanced: isBalanced,
+          rows_counted: validRowCount
+        };
+      }
+    }
+
     res.json({
       all_sheet_names: allSheetNames,
       selected_sheet: sheetName,
@@ -232,7 +294,8 @@ router.post('/:id/trial-balance/preview', upload.single('file'), (req, res) => {
       columns,
       total_data_rows: dataRows.length,
       // First 10 data rows AFTER the chosen header, for the mapping preview
-      preview_rows: dataRows.slice(0, 10)
+      preview_rows: dataRows.slice(0, 10),
+      full_totals: fullTotals
     });
 
   } catch (err) {

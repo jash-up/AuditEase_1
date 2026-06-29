@@ -34,6 +34,11 @@
     'opening_balance', 'debit_transactions', 'credit_transactions', 'closing_balance'
   ];
 
+  const formatINR = (v) => {
+    if (v === undefined || v === null) return '0.00';
+    return v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
   function autoDetectColumn(columns, fieldKey) {
     const patterns = {
       ledger_code: /ledger\s*code|a\/?c\s*no|account\s*no|gl\s*code/i,
@@ -393,19 +398,50 @@
   }
 
   // ── Proceed to Step 3: Preview & Confirm ────────────────────────────
-  function proceedToStep3() {
+  async function proceedToStep3() {
+    const btn = document.getElementById('mapping-continue-btn');
+    if (btn) btn.disabled = true;
+
+    try {
+      const formData = new FormData();
+      formData.append('file', importState.file);
+      formData.append('sheet_name', importState.selectedSheet);
+      formData.append('header_row_index', importState.headerRowIndex);
+      formData.append('column_map', JSON.stringify(importState.columnMap));
+
+      const res = await window.AE.apiFetch(`/api/audit/${engagementId}/trial-balance/preview`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Failed to validate mapping preview.');
+        if (btn) btn.disabled = false;
+        return;
+      }
+
+      renderValidationSummary(data);
+    } catch (e) {
+      console.error('[Preview Validation Error]', e);
+      alert('Network error during preview validation.');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function renderValidationSummary(data) {
     const table = document.getElementById('tb-preview-table');
     if (!table) return;
 
     const map = importState.columnMap;
-    const allRows = importState.previewRows;
+    const allRows = data.preview_rows || [];
 
     const headersHtml = [
       'Ledger Code', 'Ledger Name', 'Opening Balance',
       'Debit Transactions', 'Credit Transactions', 'Closing Balance'
     ].map(h => `<th>${window.AE.escapeHtml(h)}</th>`).join('');
 
-    const rowsHtml = allRows.slice(0, 10).map(row => {
+    const rowsHtml = allRows.map(row => {
       const getVal = (idx) => idx !== null && idx !== undefined ? (row[idx] ?? '') : '';
       return `<tr>
         <td>${window.AE.escapeHtml(String(getVal(map.ledger_code)))}</td>
@@ -419,61 +455,25 @@
 
     table.innerHTML = `<thead><tr>${headersHtml}</tr></thead><tbody>${rowsHtml}</tbody>`;
 
-    // Compute client-side balance check from all preview rows
-    const parseNum = (v) => {
-      if (v === '' || v === null || v === undefined) return 0;
-      const cleaned = String(v).replace(/[,₹\s]/g, '');
-      const num = parseFloat(cleaned);
-      return isNaN(num) ? 0 : num;
-    };
+    const countSpan = document.getElementById('preview-total-row-count');
+    if (countSpan) {
+      countSpan.textContent = data.total_data_rows;
+    }
 
-    let debitSum = 0;
-    let creditSum = 0;
-    const codeNameCounts = {};
-    const codeOnlyCounts = {};
-
-    allRows.forEach(row => {
-      const code = (map.ledger_code !== null && map.ledger_code !== undefined)
-        ? String(row[map.ledger_code] ?? '').trim()
-        : '';
-      const name = (map.ledger_name !== null && map.ledger_name !== undefined)
-        ? String(row[map.ledger_name] ?? '').trim()
-        : '';
-
-      const codeWasMapped = map.ledger_code !== null && map.ledger_code !== undefined;
-      const nameWasMapped = map.ledger_name !== null && map.ledger_name !== undefined;
-
-      // Match backend skip logic:
-      if (codeWasMapped && !code) return;
-      if (nameWasMapped && !name) return;
-
-      debitSum += parseNum(row[map.debit_transactions]);
-      creditSum += parseNum(row[map.credit_transactions]);
-
-      if (codeWasMapped) {
-        codeOnlyCounts[code] = (codeOnlyCounts[code] || 0) + 1;
-      }
-      if (codeWasMapped || nameWasMapped) {
-        const key = `${code}|||${name}`;
-        codeNameCounts[key] = (codeNameCounts[key] || 0) + 1;
-      }
-    });
-
-    const isBalanced = Math.abs(debitSum - creditSum) < 0.01;
     const checkContainer = document.getElementById('balance-check-container');
-    if (checkContainer) {
-      const totalRows = importState.previewRows.length; // Approximate total rows in preview
-      if (isBalanced) {
+    if (checkContainer && data.full_totals) {
+      const { total_debit, total_credit, difference, is_balanced, rows_counted } = data.full_totals;
+
+      if (is_balanced) {
         checkContainer.innerHTML = `
-          <div class="balance-check balanced">
-            <span>✓</span> Balanced: Total Debits equal Total Credits (Preview of ${totalRows} rows).
+          <div class="balance-check balanced" id="balance-check-banner">
+            <span>✓</span> Balanced. Total Debit: ${formatINR(total_debit)} = Total Credit: ${formatINR(total_credit)} across ${rows_counted} ledger rows.
           </div>
         `;
       } else {
-        const diff = Math.abs(debitSum - creditSum);
         checkContainer.innerHTML = `
-          <div class="balance-check unbalanced">
-            <span>✗</span> Unbalanced: Difference is ${diff.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.
+          <div class="balance-check unbalanced" id="balance-check-banner">
+            <span>✗</span> Unbalanced: Difference is ${formatINR(Math.abs(difference))} across ${rows_counted} ledger rows.
           </div>
         `;
       }
@@ -482,6 +482,32 @@
     const dupNoticeContainer = document.getElementById('duplicate-notice-container');
     if (dupNoticeContainer) {
       dupNoticeContainer.innerHTML = '';
+
+      const codeNameCounts = {};
+      const codeOnlyCounts = {};
+      const codeWasMapped = map.ledger_code !== null && map.ledger_code !== undefined;
+      const nameWasMapped = map.ledger_name !== null && map.ledger_name !== undefined;
+
+      allRows.forEach(row => {
+        const code = (map.ledger_code !== null && map.ledger_code !== undefined)
+          ? String(row[map.ledger_code] ?? '').trim()
+          : '';
+        const name = (map.ledger_name !== null && map.ledger_name !== undefined)
+          ? String(row[map.ledger_name] ?? '').trim()
+          : '';
+
+        // Match backend skip logic:
+        if (codeWasMapped && !code) return;
+        if (nameWasMapped && !name) return;
+
+        if (codeWasMapped) {
+          codeOnlyCounts[code] = (codeOnlyCounts[code] || 0) + 1;
+        }
+        if (codeWasMapped || nameWasMapped) {
+          const key = `${code}|||${name}`;
+          codeNameCounts[key] = (codeNameCounts[key] || 0) + 1;
+        }
+      });
 
       const codesReused = Object.entries(codeOnlyCounts)
         .filter(([_, count]) => count > 1)
