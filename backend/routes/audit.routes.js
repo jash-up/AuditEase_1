@@ -266,15 +266,14 @@ router.post('/:id/trial-balance/import', upload.single('file'), (req, res) => {
     }
 
     const requiredFields = [
-      'ledger_code', 'ledger_name', 'opening_balance',
-      'debit_transactions', 'credit_transactions', 'closing_balance'
+      'opening_balance', 'debit_transactions', 'credit_transactions', 'closing_balance'
     ];
     for (const field of requiredFields) {
       if (columnMap[field] === undefined || columnMap[field] === null) {
         return res.status(400).json({ error: `Missing column mapping for: ${field}` });
       }
     }
-    const usedIndices = Object.values(columnMap);
+    const usedIndices = Object.values(columnMap).filter(v => v !== null && v !== undefined);
     if (new Set(usedIndices).size !== usedIndices.length) {
       return res.status(400).json({ error: 'The same column cannot be mapped to more than one field.' });
     }
@@ -325,19 +324,52 @@ router.post('/:id/trial-balance/import', upload.single('file'), (req, res) => {
       const errors = [];
       const seenInThisImport = new Set(); // tracks code+name pairs seen so far in this same import batch
 
+      const dataStartIndex = headerRowIndex + 1;
+
       rows.forEach((row, i) => {
         if (skipRowIndices.has(i)) { skippedManual++; return; }
 
-        const code = String(row[columnMap.ledger_code] ?? '').trim();
-        const name = String(row[columnMap.ledger_name] ?? '').trim();
+        // columnMap.ledger_code / columnMap.ledger_name may now be null if the user chose
+        // not to map them. Only read from the row if a column was actually mapped.
+        const code = (columnMap.ledger_code !== null && columnMap.ledger_code !== undefined)
+          ? String(row[columnMap.ledger_code] ?? '').trim()
+          : '';
+        const name = (columnMap.ledger_name !== null && columnMap.ledger_name !== undefined)
+          ? String(row[columnMap.ledger_name] ?? '').trim()
+          : '';
 
-        if (!code) { skippedBlank++; return; }
-        if (!name) {
-          errors.push(`Row with ledger code "${code}" has no ledger name — skipped`);
+        // The existing "skip rows with no code — likely a group/subtotal row" heuristic
+        // only applies when ledger_code WAS mapped. If the user chose not to map ledger_code
+        // at all, we can no longer use "blank code" to detect subtotal rows — every row
+        // will have a blank code by definition, so skip that heuristic entirely in this case.
+        if (columnMap.ledger_code !== null && columnMap.ledger_code !== undefined && !code) {
+          skippedBlank++;
           return;
         }
 
-        const dedupeKey = `${code}|||${name}`;
+        // Previously a missing ledger_name was always an error. Now it's only worth flagging
+        // if ledger_name WAS mapped but happened to be blank on this specific row — not an
+        // error if the user chose not to map ledger_name at all.
+        if (columnMap.ledger_name !== null && columnMap.ledger_name !== undefined && !name) {
+          errors.push(`Row with ledger code "${code || '(none)'}" has no ledger name — skipped`);
+          return;
+        }
+
+        let finalCode = code;
+        let finalName = name;
+
+        // If BOTH ledger_code and ledger_name were left unmapped for this entire import,
+        // every row would otherwise resolve to identical blank values and collide on the
+        // UNIQUE constraint, incorrectly merging unrelated ledgers together. Guard against
+        // this by giving each such row a distinct synthetic name based on its row position.
+        const codeWasMapped = columnMap.ledger_code !== null && columnMap.ledger_code !== undefined;
+        const nameWasMapped = columnMap.ledger_name !== null && columnMap.ledger_name !== undefined;
+
+        if (!codeWasMapped && !nameWasMapped) {
+          finalName = `Unnamed Ledger (Row ${i + dataStartIndex + 1})`;
+        }
+
+        const dedupeKey = `${finalCode}|||${finalName}`;
         if (seenInThisImport.has(dedupeKey)) {
           merged++;
         } else {
@@ -346,7 +378,7 @@ router.post('/:id/trial-balance/import', upload.single('file'), (req, res) => {
         }
 
         stmt.run(
-          req.params.id, code, name,
+          req.params.id, finalCode, finalName,
           parseNum(row[columnMap.opening_balance]),
           parseNum(row[columnMap.debit_transactions]),
           parseNum(row[columnMap.credit_transactions]),

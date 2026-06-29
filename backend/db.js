@@ -104,8 +104,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS trial_balance_ledgers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
-    ledger_code TEXT NOT NULL,
-    ledger_name TEXT NOT NULL,
+    ledger_code TEXT NOT NULL DEFAULT '',
+    ledger_name TEXT NOT NULL DEFAULT '',
     opening_balance REAL NOT NULL DEFAULT 0,
     debit_transactions REAL NOT NULL DEFAULT 0,
     credit_transactions REAL NOT NULL DEFAULT 0,
@@ -300,6 +300,51 @@ function migrateGroupsHierarchy() {
 }
 migrateGroupsHierarchy();
 migrateUsersAddRole();
+
+function migrateLedgerCodeNameNullable() {
+  const tableInfo = db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type='table' AND name='trial_balance_ledgers'
+  `).get();
+
+  if (tableInfo && tableInfo.sql.includes('ledger_code TEXT NOT NULL,') 
+      && !tableInfo.sql.includes("ledger_code TEXT NOT NULL DEFAULT ''")) {
+    
+    console.log('[Migration] Allowing blank ledger_code/ledger_name in trial_balance_ledgers...');
+
+    db.exec(`
+      BEGIN TRANSACTION;
+
+      CREATE TABLE trial_balance_ledgers_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        engagement_id INTEGER NOT NULL REFERENCES audit_engagements(id) ON DELETE CASCADE,
+        ledger_code TEXT NOT NULL DEFAULT '',
+        ledger_name TEXT NOT NULL DEFAULT '',
+        opening_balance REAL NOT NULL DEFAULT 0,
+        debit_transactions REAL NOT NULL DEFAULT 0,
+        credit_transactions REAL NOT NULL DEFAULT 0,
+        closing_balance REAL NOT NULL DEFAULT 0,
+        sub_subgroup_id INTEGER REFERENCES sub_subgroups(id),
+        is_mapped INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(engagement_id, ledger_code, ledger_name)
+      );
+
+      INSERT INTO trial_balance_ledgers_new 
+        SELECT id, engagement_id, ledger_code, ledger_name, opening_balance,
+               debit_transactions, credit_transactions, closing_balance,
+               sub_subgroup_id, is_mapped, created_at
+        FROM trial_balance_ledgers;
+
+      DROP TABLE trial_balance_ledgers;
+      ALTER TABLE trial_balance_ledgers_new RENAME TO trial_balance_ledgers;
+
+      COMMIT;
+    `);
+
+    console.log('[Migration] ledger_code/ledger_name now allow blank values.');
+  }
+}
+migrateLedgerCodeNameNullable();
 
 function seedDefaultGroupsForEngagement(engagementId) {
   const GROUP_NAMES = ['Income', 'Expenditure', 'Asset', 'Liability', 'Equity'];

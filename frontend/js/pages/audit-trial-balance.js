@@ -30,6 +30,10 @@
     debit_transactions: 'Debit Transactions', credit_transactions: 'Credit Transactions', closing_balance: 'Closing Balance'
   };
 
+  const REQUIRED_MAPPING_FIELDS = [
+    'opening_balance', 'debit_transactions', 'credit_transactions', 'closing_balance'
+  ];
+
   function autoDetectColumn(columns, fieldKey) {
     const patterns = {
       ledger_code: /ledger\s*code|a\/?c\s*no|account\s*no|gl\s*code/i,
@@ -262,12 +266,13 @@
     container.innerHTML = '';
 
     Object.entries(FIELD_LABELS).forEach(([fieldKey, fieldLabel]) => {
+      const isRequired = REQUIRED_MAPPING_FIELDS.includes(fieldKey);
       const row = document.createElement('div');
       row.className = 'column-mapper-row';
       row.style.cssText = 'display:grid; grid-template-columns:200px 1fr; gap:12px; align-items:center; margin-bottom:10px;';
 
       const label = document.createElement('label');
-      label.textContent = fieldLabel + ' *';
+      label.textContent = isRequired ? `${fieldLabel} *` : `${fieldLabel} (optional)`;
       label.style.cssText = 'font-size:13px;color:var(--text-secondary);';
 
       const select = document.createElement('select');
@@ -310,20 +315,34 @@
     importState.previewRows.slice(0, 10).forEach((row, idx) => {
       const getVal = (fieldIdx) => fieldIdx !== null && fieldIdx !== undefined ? (row[fieldIdx] ?? '') : '';
       const code = getVal(map.ledger_code);
-      const willImport = String(code).trim() !== '';
-      if (!willImport) blankCount++;
+      const name = getVal(map.ledger_name);
+
+      const codeWasMapped = map.ledger_code !== null && map.ledger_code !== undefined;
+      const nameWasMapped = map.ledger_name !== null && map.ledger_name !== undefined;
+
+      let willImport = true;
+      let statusText = '✓ Import';
+
+      if (codeWasMapped && String(code).trim() === '') {
+        willImport = false;
+        statusText = '— Skip (no ledger code)';
+        blankCount++;
+      } else if (nameWasMapped && String(name).trim() === '') {
+        willImport = false;
+        statusText = '— Skip (no ledger name)';
+      }
 
       const tr = document.createElement('tr');
       if (!willImport) tr.style.opacity = '0.45';
 
       tr.innerHTML = `
         <td>${window.AE.escapeHtml(String(code))}</td>
-        <td>${window.AE.escapeHtml(String(getVal(map.ledger_name)))}</td>
+        <td>${window.AE.escapeHtml(String(name))}</td>
         <td>${window.AE.escapeHtml(String(getVal(map.opening_balance)))}</td>
         <td>${window.AE.escapeHtml(String(getVal(map.debit_transactions)))}</td>
         <td>${window.AE.escapeHtml(String(getVal(map.credit_transactions)))}</td>
         <td>${window.AE.escapeHtml(String(getVal(map.closing_balance)))}</td>
-        <td>${willImport ? '✓ Import' : '— Skip (no ledger code)'}</td>
+        <td>${statusText}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -338,7 +357,7 @@
 
   function validateContinueButton() {
     const map = importState.columnMap;
-    const allMapped = Object.values(map).every(v => v !== null);
+    const allRequiredMapped = REQUIRED_MAPPING_FIELDS.every(f => map[f] !== null);
     const values = Object.values(map).filter(v => v !== null);
     const noDuplicates = new Set(values).size === values.length;
 
@@ -352,8 +371,8 @@
         return;
     }
 
-    if (!allMapped) {
-      const missing = Object.entries(map).filter(([_, v]) => v === null).map(([k]) => FIELD_LABELS[k]);
+    if (!allRequiredMapped) {
+      const missing = REQUIRED_MAPPING_FIELDS.filter(f => map[f] === null).map(f => FIELD_LABELS[f]);
       if (errorEl) {
         errorEl.textContent = `Please map: ${missing.join(', ')}`;
         errorEl.style.display = 'block';
@@ -414,14 +433,27 @@
     const codeOnlyCounts = {};
 
     allRows.forEach(row => {
-      const code = String(row[map.ledger_code] ?? '').trim();
-      const name = String(row[map.ledger_name] ?? '').trim();
+      const code = (map.ledger_code !== null && map.ledger_code !== undefined)
+        ? String(row[map.ledger_code] ?? '').trim()
+        : '';
+      const name = (map.ledger_name !== null && map.ledger_name !== undefined)
+        ? String(row[map.ledger_name] ?? '').trim()
+        : '';
 
-      if (code) { // Only count rows that will be imported
-        debitSum += parseNum(row[map.debit_transactions]);
-        creditSum += parseNum(row[map.credit_transactions]);
+      const codeWasMapped = map.ledger_code !== null && map.ledger_code !== undefined;
+      const nameWasMapped = map.ledger_name !== null && map.ledger_name !== undefined;
 
+      // Match backend skip logic:
+      if (codeWasMapped && !code) return;
+      if (nameWasMapped && !name) return;
+
+      debitSum += parseNum(row[map.debit_transactions]);
+      creditSum += parseNum(row[map.credit_transactions]);
+
+      if (codeWasMapped) {
         codeOnlyCounts[code] = (codeOnlyCounts[code] || 0) + 1;
+      }
+      if (codeWasMapped || nameWasMapped) {
         const key = `${code}|||${name}`;
         codeNameCounts[key] = (codeNameCounts[key] || 0) + 1;
       }
@@ -638,8 +670,8 @@
 
       return `
         <tr class="${l.is_mapped ? '' : 'unmapped-row'}">
-          <td class="mono">${window.AE.escapeHtml(l.ledger_code)}</td>
-          <td>${window.AE.escapeHtml(l.ledger_name)}</td>
+          <td class="mono">${window.AE.escapeHtml(l.ledger_code ?? '')}</td>
+          <td>${window.AE.escapeHtml(l.ledger_name ?? '')}</td>
           <td class="text-right mono">${fmt(l.opening_balance)}</td>
           <td class="text-right mono">${fmt(l.debit_transactions)}</td>
           <td class="text-right mono">${fmt(l.credit_transactions)}</td>
