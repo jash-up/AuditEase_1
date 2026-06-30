@@ -466,7 +466,7 @@
       if (isBalanced) {
         checkContainer.innerHTML = `
           <div class="balance-check balanced">
-            <span>✓</span> Balanced: Total Debits equal Total Credits (Preview of ${totalRows} rows).
+            <span>✓</span> Balanced: Total Debits equal Total Credits (Analyzed ${totalRows} rows).
           </div>
         `;
       } else {

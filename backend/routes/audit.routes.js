@@ -231,8 +231,8 @@ router.post('/:id/trial-balance/preview', upload.single('file'), (req, res) => {
       header_row_index: headerRowIndex,
       columns,
       total_data_rows: dataRows.length,
-      // First 10 data rows AFTER the chosen header, for the mapping preview
-      preview_rows: dataRows.slice(0, 10)
+      // Send all data rows for accurate preview calculations
+      preview_rows: dataRows
     });
 
   } catch (err) {
