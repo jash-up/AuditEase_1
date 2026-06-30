@@ -181,7 +181,7 @@
           filterGroup = { level, id };
         }
         renderGroupsPanel();
-        renderLedgerPanel();
+        renderLedgerPanel(false);
       });
     });
 
@@ -297,9 +297,15 @@
   }
 
   // ── Ledgers Panel ──────────────────────────────────────────────────
-  function renderLedgerPanel() {
+  function renderLedgerPanel(preserveScroll = true) {
     const panel = document.getElementById('mapping-right');
     if (!panel) return;
+
+    let currentScroll = 0;
+    if (preserveScroll) {
+      const scrollArea = panel.querySelector('.ledger-table-scroll-area');
+      if (scrollArea) currentScroll = scrollArea.scrollTop;
+    }
 
     let filtered = ledgers;
 
@@ -483,12 +489,17 @@
     });
 
     // Chips
-    panel.querySelector('#chip-unmapped')?.addEventListener('click', () => { filterGroup = null; filterState = 'unmapped'; renderGroupsPanel(); renderLedgerPanel(); });
-    panel.querySelector('#chip-all')?.addEventListener('click', () => { filterGroup = null; filterState = 'all'; renderGroupsPanel(); renderLedgerPanel(); });
-    panel.querySelector('#chip-mapped')?.addEventListener('click', () => { filterGroup = null; filterState = 'mapped'; renderGroupsPanel(); renderLedgerPanel(); });
+    panel.querySelector('#chip-unmapped')?.addEventListener('click', () => { filterGroup = null; filterState = 'unmapped'; renderGroupsPanel(); renderLedgerPanel(false); });
+    panel.querySelector('#chip-all')?.addEventListener('click', () => { filterGroup = null; filterState = 'all'; renderGroupsPanel(); renderLedgerPanel(false); });
+    panel.querySelector('#chip-mapped')?.addEventListener('click', () => { filterGroup = null; filterState = 'mapped'; renderGroupsPanel(); renderLedgerPanel(false); });
 
     panel.querySelector('#btn-bulk-map')?.addEventListener('click', () => openBulkMapModal());
     panel.querySelector('#btn-import-prev-mapping')?.addEventListener('click', importPreviousMapping);
+
+    if (preserveScroll && currentScroll > 0) {
+      const newScrollArea = panel.querySelector('.ledger-table-scroll-area');
+      if (newScrollArea) newScrollArea.scrollTop = currentScroll;
+    }
   }
 
   async function saveIndividualMapping(ledgerId, subSubgroupId) {
