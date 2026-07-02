@@ -513,8 +513,8 @@ router.get('/:id/groups-tree', (req, res) => {
         ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name, ssg.display_order AS sub_subgroup_order,
         (SELECT COUNT(*) FROM trial_balance_ledgers WHERE sub_subgroup_id = ssg.id) AS ssg_ledger_count
       FROM groups g
-      JOIN subgroups sg ON sg.group_id = g.id
-      JOIN sub_subgroups ssg ON ssg.subgroup_id = sg.id
+      LEFT JOIN subgroups sg ON sg.group_id = g.id
+      LEFT JOIN sub_subgroups ssg ON ssg.subgroup_id = sg.id
       WHERE g.engagement_id = ?
       ORDER BY g.display_order ASC, sg.display_order ASC, ssg.display_order ASC
     `).all(req.params.id);
@@ -533,29 +533,34 @@ router.get('/:id/groups-tree', (req, res) => {
           subgroups: []
         };
         tree.push(currentGroup);
+        currentSubgroup = null;
       }
 
-      if (!currentSubgroup || currentSubgroup.id !== row.subgroup_id) {
-        currentSubgroup = {
-          id: row.subgroup_id,
-          name: row.subgroup_name,
-          display_order: row.subgroup_order,
-          ledger_count: 0,
-          sub_subgroups: []
-        };
-        currentGroup.subgroups.push(currentSubgroup);
-      }
+      if (row.subgroup_id) {
+        if (!currentSubgroup || currentSubgroup.id !== row.subgroup_id) {
+          currentSubgroup = {
+            id: row.subgroup_id,
+            name: row.subgroup_name,
+            display_order: row.subgroup_order,
+            ledger_count: 0,
+            sub_subgroups: []
+          };
+          currentGroup.subgroups.push(currentSubgroup);
+        }
 
-      const ssg = {
-        id: row.sub_subgroup_id,
-        name: row.sub_subgroup_name,
-        display_order: row.sub_subgroup_order,
-        ledger_count: row.ssg_ledger_count
-      };
-      
-      currentSubgroup.sub_subgroups.push(ssg);
-      currentSubgroup.ledger_count += ssg.ledger_count;
-      currentGroup.ledger_count += ssg.ledger_count;
+        if (row.sub_subgroup_id) {
+          const ssg = {
+            id: row.sub_subgroup_id,
+            name: row.sub_subgroup_name,
+            display_order: row.sub_subgroup_order,
+            ledger_count: row.ssg_ledger_count
+          };
+          
+          currentSubgroup.sub_subgroups.push(ssg);
+          currentSubgroup.ledger_count += ssg.ledger_count;
+          currentGroup.ledger_count += ssg.ledger_count;
+        }
+      }
     }
 
     res.json(tree);
