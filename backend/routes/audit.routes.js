@@ -428,13 +428,15 @@ router.get('/:id/trial-balance', (req, res) => {
 
     let query = `
       SELECT tb.*,
-             g.id AS group_id, g.name AS group_name,
-             sg.id AS subgroup_id, sg.name AS subgroup_name,
+             COALESCE(g1.id, g2.id) AS group_id, COALESCE(g1.name, g2.name) AS group_name,
+             COALESCE(sg1.id, sg2.id) AS subgroup_id, COALESCE(sg1.name, sg2.name) AS subgroup_name,
              ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name
       FROM trial_balance_ledgers tb
       LEFT JOIN sub_subgroups ssg ON tb.sub_subgroup_id = ssg.id
-      LEFT JOIN subgroups sg ON ssg.subgroup_id = sg.id
-      LEFT JOIN groups g ON sg.group_id = g.id
+      LEFT JOIN subgroups sg1 ON ssg.subgroup_id = sg1.id
+      LEFT JOIN groups g1 ON sg1.group_id = g1.id
+      LEFT JOIN subgroups sg2 ON tb.subgroup_id = sg2.id
+      LEFT JOIN groups g2 ON sg2.group_id = g2.id
       WHERE tb.engagement_id = ?
     `;
     const params = [req.params.id];
@@ -453,11 +455,11 @@ router.get('/:id/trial-balance', (req, res) => {
       query += ' AND ssg.id = ?';
       params.push(sub_subgroup_id);
     } else if (subgroup_id) {
-      query += ' AND sg.id = ?';
-      params.push(subgroup_id);
+      query += ' AND (sg1.id = ? OR sg2.id = ?)';
+      params.push(subgroup_id, subgroup_id);
     } else if (group_id) {
-      query += ' AND g.id = ?';
-      params.push(group_id);
+      query += ' AND (g1.id = ? OR g2.id = ?)';
+      params.push(group_id, group_id);
     }
 
     query += ' ORDER BY tb.ledger_code ASC';
@@ -511,7 +513,8 @@ router.get('/:id/groups-tree', (req, res) => {
         g.id AS group_id, g.name AS group_name, g.display_order AS group_order,
         sg.id AS subgroup_id, sg.name AS subgroup_name, sg.display_order AS subgroup_order,
         ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name, ssg.display_order AS sub_subgroup_order,
-        (SELECT COUNT(*) FROM trial_balance_ledgers WHERE sub_subgroup_id = ssg.id) AS ssg_ledger_count
+        (SELECT COUNT(*) FROM trial_balance_ledgers WHERE sub_subgroup_id = ssg.id) AS ssg_ledger_count,
+        (SELECT COUNT(*) FROM trial_balance_ledgers WHERE subgroup_id = sg.id AND sub_subgroup_id IS NULL) AS sg_direct_ledger_count
       FROM groups g
       LEFT JOIN subgroups sg ON sg.group_id = g.id
       LEFT JOIN sub_subgroups ssg ON ssg.subgroup_id = sg.id
@@ -542,10 +545,11 @@ router.get('/:id/groups-tree', (req, res) => {
             id: row.subgroup_id,
             name: row.subgroup_name,
             display_order: row.subgroup_order,
-            ledger_count: 0,
+            ledger_count: row.sg_direct_ledger_count || 0,
             sub_subgroups: []
           };
           currentGroup.subgroups.push(currentSubgroup);
+          currentGroup.ledger_count += (row.sg_direct_ledger_count || 0);
         }
 
         if (row.sub_subgroup_id) {
@@ -640,6 +644,15 @@ router.delete('/:id/subgroups/:sgid', (req, res) => {
 
     let unmappedCount = 0;
     const tx = db.transaction(() => {
+      // Unmap direct subgroup mappings
+      const directRes = db.prepare(`
+        UPDATE trial_balance_ledgers
+        SET subgroup_id = NULL, is_mapped = 0
+        WHERE subgroup_id = ?
+      `).run(req.params.sgid);
+      unmappedCount += directRes.changes;
+
+      // Unmap sub-subgroup mappings
       const updateRes = db.prepare(`
         UPDATE trial_balance_ledgers
         SET sub_subgroup_id = NULL, is_mapped = 0
@@ -647,7 +660,7 @@ router.delete('/:id/subgroups/:sgid', (req, res) => {
           SELECT id FROM sub_subgroups WHERE subgroup_id = ?
         )
       `).run(req.params.sgid);
-      unmappedCount = updateRes.changes;
+      unmappedCount += updateRes.changes;
 
       db.prepare('DELETE FROM subgroups WHERE id = ?').run(req.params.sgid);
     });
@@ -759,10 +772,10 @@ router.patch('/:id/ledgers/:lid/map', (req, res) => {
     const ledger = db.prepare('SELECT * FROM trial_balance_ledgers WHERE id = ? AND engagement_id = ?').get(req.params.lid, req.params.id);
     if (!ledger) return res.status(404).json({ error: 'Ledger not found' });
 
-    const { sub_subgroup_id } = req.body;
+    const { sub_subgroup_id, subgroup_id } = req.body;
 
     if (sub_subgroup_id !== null && sub_subgroup_id !== undefined) {
-      // Validate sub_subgroup exists and belongs to this engagement
+      // Map via sub-subgroup (full hierarchy)
       const groupCheck = db.prepare(`
         SELECT g.engagement_id
         FROM sub_subgroups ssg
@@ -775,21 +788,37 @@ router.patch('/:id/ledgers/:lid/map', (req, res) => {
         return res.status(404).json({ error: 'Sub-subgroup not found in this engagement' });
       }
 
-      db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = ?, is_mapped = 1 WHERE id = ?').run(sub_subgroup_id, req.params.lid);
+      db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = ?, subgroup_id = NULL, is_mapped = 1 WHERE id = ?').run(sub_subgroup_id, req.params.lid);
+    } else if (subgroup_id !== null && subgroup_id !== undefined) {
+      // Map directly to subgroup (no sub-subgroup)
+      const sgCheck = db.prepare(`
+        SELECT g.engagement_id
+        FROM subgroups sg
+        JOIN groups g ON sg.group_id = g.id
+        WHERE sg.id = ?
+      `).get(subgroup_id);
+      
+      if (!sgCheck || sgCheck.engagement_id != req.params.id) {
+        return res.status(404).json({ error: 'Subgroup not found in this engagement' });
+      }
+
+      db.prepare('UPDATE trial_balance_ledgers SET subgroup_id = ?, sub_subgroup_id = NULL, is_mapped = 1 WHERE id = ?').run(subgroup_id, req.params.lid);
     } else {
       // Unmap
-      db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = NULL, is_mapped = 0 WHERE id = ?').run(req.params.lid);
+      db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = NULL, subgroup_id = NULL, is_mapped = 0 WHERE id = ?').run(req.params.lid);
     }
 
     const updated = db.prepare(`
       SELECT tb.*,
-             g.id AS group_id, g.name AS group_name,
-             sg.id AS subgroup_id, sg.name AS subgroup_name,
+             COALESCE(g1.id, g2.id) AS group_id, COALESCE(g1.name, g2.name) AS group_name,
+             COALESCE(sg1.id, sg2.id) AS subgroup_id, COALESCE(sg1.name, sg2.name) AS subgroup_name,
              ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name
       FROM trial_balance_ledgers tb
       LEFT JOIN sub_subgroups ssg ON tb.sub_subgroup_id = ssg.id
-      LEFT JOIN subgroups sg ON ssg.subgroup_id = sg.id
-      LEFT JOIN groups g ON sg.group_id = g.id
+      LEFT JOIN subgroups sg1 ON ssg.subgroup_id = sg1.id
+      LEFT JOIN groups g1 ON sg1.group_id = g1.id
+      LEFT JOIN subgroups sg2 ON tb.subgroup_id = sg2.id
+      LEFT JOIN groups g2 ON sg2.group_id = g2.id
       WHERE tb.id = ?
     `).get(req.params.lid);
 
@@ -803,7 +832,7 @@ router.patch('/:id/ledgers/:lid/map', (req, res) => {
 // POST /api/audit/:id/ledgers/bulk-map
 router.post('/:id/ledgers/bulk-map', (req, res) => {
   try {
-    const { ledger_ids, sub_subgroup_id } = req.body;
+    const { ledger_ids, sub_subgroup_id, subgroup_id } = req.body;
 
     if (!Array.isArray(ledger_ids) || ledger_ids.length === 0) {
       return res.status(400).json({ error: 'ledger_ids must be a non-empty array' });
@@ -821,11 +850,24 @@ router.post('/:id/ledgers/bulk-map', (req, res) => {
       if (!groupCheck || groupCheck.engagement_id != req.params.id) {
         return res.status(404).json({ error: 'Sub-subgroup not found in this engagement' });
       }
+    } else if (subgroup_id !== null && subgroup_id !== undefined) {
+      const sgCheck = db.prepare(`
+        SELECT g.engagement_id
+        FROM subgroups sg
+        JOIN groups g ON sg.group_id = g.id
+        WHERE sg.id = ?
+      `).get(subgroup_id);
+      
+      if (!sgCheck || sgCheck.engagement_id != req.params.id) {
+        return res.status(404).json({ error: 'Subgroup not found in this engagement' });
+      }
     }
 
     const updateStmt = sub_subgroup_id !== null && sub_subgroup_id !== undefined
-      ? db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = ?, is_mapped = 1 WHERE id = ? AND engagement_id = ?')
-      : db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = NULL, is_mapped = 0 WHERE id = ? AND engagement_id = ?');
+      ? db.prepare('UPDATE trial_balance_ledgers SET sub_subgroup_id = ?, subgroup_id = NULL, is_mapped = 1 WHERE id = ? AND engagement_id = ?')
+      : (subgroup_id !== null && subgroup_id !== undefined 
+          ? db.prepare('UPDATE trial_balance_ledgers SET subgroup_id = ?, sub_subgroup_id = NULL, is_mapped = 1 WHERE id = ? AND engagement_id = ?')
+          : db.prepare('UPDATE trial_balance_ledgers SET subgroup_id = NULL, sub_subgroup_id = NULL, is_mapped = 0 WHERE id = ? AND engagement_id = ?'));
 
     let updated = 0;
     const bulkMapTx = db.transaction(() => {
@@ -833,6 +875,8 @@ router.post('/:id/ledgers/bulk-map', (req, res) => {
         let result;
         if (sub_subgroup_id !== null && sub_subgroup_id !== undefined) {
           result = updateStmt.run(sub_subgroup_id, lid, req.params.id);
+        } else if (subgroup_id !== null && subgroup_id !== undefined) {
+          result = updateStmt.run(subgroup_id, lid, req.params.id);
         } else {
           result = updateStmt.run(lid, req.params.id);
         }
@@ -1290,13 +1334,15 @@ router.post('/:id/entries/:eid/reject', (req, res) => {
 function computeAdjustedTB(engagementId) {
   const ledgers = db.prepare(`
     SELECT tb.*,
-           g.id AS group_id, g.name AS group_name,
-           sg.id AS subgroup_id, sg.name AS subgroup_name,
+           COALESCE(g1.id, g2.id) AS group_id, COALESCE(g1.name, g2.name) AS group_name,
+           COALESCE(sg1.id, sg2.id) AS subgroup_id, COALESCE(sg1.name, sg2.name) AS subgroup_name,
            ssg.id AS sub_subgroup_id, ssg.name AS sub_subgroup_name
     FROM trial_balance_ledgers tb
     LEFT JOIN sub_subgroups ssg ON tb.sub_subgroup_id = ssg.id
-    LEFT JOIN subgroups sg ON ssg.subgroup_id = sg.id
-    LEFT JOIN groups g ON sg.group_id = g.id
+    LEFT JOIN subgroups sg1 ON ssg.subgroup_id = sg1.id
+    LEFT JOIN groups g1 ON sg1.group_id = g1.id
+    LEFT JOIN subgroups sg2 ON tb.subgroup_id = sg2.id
+    LEFT JOIN groups g2 ON sg2.group_id = g2.id
     WHERE tb.engagement_id = ?
     ORDER BY tb.ledger_code ASC
   `).all(engagementId);
@@ -1411,10 +1457,10 @@ function buildFinancialSections(engagementId) {
       };
     }
 
-    const subSubgroupKey = ledger.sub_subgroup_name;
+    const subSubgroupKey = ledger.sub_subgroup_name || '_direct';
     if (!section.subgroups[subgroupKey].subSubgroups[subSubgroupKey]) {
       section.subgroups[subgroupKey].subSubgroups[subSubgroupKey] = {
-        sub_subgroup_name: ledger.sub_subgroup_name,
+        sub_subgroup_name: ledger.sub_subgroup_name || null,
         ledgers: [],
         total: 0
       };
@@ -1725,12 +1771,14 @@ router.post('/:id/report/generate', async (req, res) => {
 
         for (const ssgk of Object.keys(subgroup.subSubgroups)) {
           const subSubgroup = subgroup.subSubgroups[ssgk];
-          rows.push(new TableRow({
-            children: [
-              new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `    ${subSubgroup.sub_subgroup_name}`, bold: true })] })] }),
-              new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: subSubgroup.total.toFixed(2) })] })] })
-            ]
-          }));
+          if (subSubgroup.sub_subgroup_name) {
+            rows.push(new TableRow({
+              children: [
+                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: `    ${subSubgroup.sub_subgroup_name}`, bold: true })] })], width: { size: 60, type: WidthType.PERCENTAGE } }),
+                new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: subSubgroup.total.toFixed(2) })] })], width: { size: 40, type: WidthType.PERCENTAGE } })
+              ]
+            }));
+          }
 
           for (const ledger of subSubgroup.ledgers) {
             rows.push(new TableRow({

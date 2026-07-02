@@ -102,12 +102,14 @@
       const subSubgroups = sg.subSubgroups || {};
       for (const ssgKey in subSubgroups) {
         const ssg = subSubgroups[ssgKey];
-        html += `
-          <div class="fs-subgroup-row">
-            <span>${window.AE.escapeHtml(ssg.sub_subgroup_name)}</span>
-            <span class="fs-amount">${fmt(ssg.total)}</span>
-          </div>
-        `;
+        if (ssg.sub_subgroup_name) {
+          html += `
+            <div class="fs-subgroup-row">
+              <span>${window.AE.escapeHtml(ssg.sub_subgroup_name)}</span>
+              <span class="fs-amount">${fmt(ssg.total)}</span>
+            </div>
+          `;
+        }
 
         const ledgers = ssg.ledgers || [];
         ledgers.forEach(l => {

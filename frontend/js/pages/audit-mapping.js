@@ -18,7 +18,7 @@
   let selectedLedgerIds = new Set();
   
   // Local transient state for progressive mapping
-  let transientMapping = {}; // { ledgerId: { group_id, subgroup_id } }
+  let transientMapping = {}; // { ledgerId: { group_id, subgroup_id, sub_subgroup_id } }
 
   document.addEventListener('DOMContentLoaded', async () => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -64,6 +64,14 @@
       .btn-clear-map { background: transparent; border: none; color: var(--status-action); font-size: 12px; cursor: pointer; margin-left: 4px; padding: 0 4px; }
       .btn-clear-map:hover { text-decoration: underline; }
       .mapping-select { padding: 3px 6px; font-size: 11px; border: 1px solid var(--border-color); border-radius: 4px; outline: none; }
+      .sg-tooltip { position: absolute; z-index: 100; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; font-size: 11px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); pointer-events: none; white-space: nowrap; opacity: 0; transition: opacity 0.15s; max-width: 280px; }
+      .sg-tooltip.visible { opacity: 1; }
+      .sg-tooltip-title { font-weight: 600; margin-bottom: 4px; color: var(--text-primary); }
+      .sg-tooltip-item { color: var(--text-secondary); padding: 1px 0; }
+      .sg-tooltip-empty { color: var(--text-muted); font-style: italic; }
+      .tree-node[data-level="subgroup"] { position: relative; }
+      .tree-node .sg-chevron { font-size: 9px; margin-right: 4px; transition: transform 0.2s; color: var(--text-muted); display: inline-block; width: 10px; }
+      .tree-node .sg-badge { font-size: 9px; color: var(--text-muted); margin-left: 4px; }
     `;
     document.head.appendChild(style);
 
@@ -129,10 +137,12 @@
       `;
       group.subgroups.forEach(subgroup => {
         const isSgSelected = filterGroup?.level === 'subgroup' && filterGroup.id === subgroup.id;
+        const hasSsg = subgroup.sub_subgroups.length > 0;
+        const sgLedgerCount = subgroup.ledger_count || 0;
         html += `
           <details>
-            <summary class="tree-node ${isSgSelected ? 'selected' : ''}" data-level="subgroup" data-id="${subgroup.id}">
-              <span>${window.AE.escapeHtml(subgroup.name)}</span>
+            <summary class="tree-node ${isSgSelected ? 'selected' : ''}" data-level="subgroup" data-id="${subgroup.id}" data-has-ssg="${hasSsg}">
+              <span><span class="sg-chevron">${hasSsg ? '▶' : ''}</span>${window.AE.escapeHtml(subgroup.name)} <span class="sg-badge">${sgLedgerCount > 0 ? '(' + sgLedgerCount + ')' : ''}</span></span>
               <div class="tree-actions">
                 <button class="tree-btn btn-edit-sg" data-id="${subgroup.id}" data-name="${window.AE.escapeHtml(subgroup.name)}" title="Edit">✏️</button>
                 <button class="tree-btn btn-del-sg" data-id="${subgroup.id}" data-name="${window.AE.escapeHtml(subgroup.name)}" title="Delete">🗑️</button>
@@ -141,20 +151,24 @@
             </summary>
             <div class="tree-children" style="margin-left: 12px; border-left: 1px dashed var(--border-color); padding-left: 6px;">
         `;
-        subgroup.sub_subgroups.forEach(ssg => {
-          const isSsgSelected = filterGroup?.level === 'sub_subgroup' && filterGroup.id === ssg.id;
-          html += `
-            <div class="tree-node leaf ${isSsgSelected ? 'selected' : ''}" data-level="sub_subgroup" data-id="${ssg.id}">
-              <span class="leaf-content" style="flex:1; padding:2px 4px; border-radius:4px;">
-                ${window.AE.escapeHtml(ssg.name)} <span style="color:var(--text-muted);font-size:10px;">(${ssg.ledger_count})</span>
-              </span>
-              <div class="tree-actions">
-                <button class="tree-btn btn-edit-ssg" data-id="${ssg.id}" data-name="${window.AE.escapeHtml(ssg.name)}" title="Edit">✏️</button>
-                <button class="tree-btn btn-del-ssg" data-id="${ssg.id}" data-name="${window.AE.escapeHtml(ssg.name)}" title="Delete">🗑️</button>
+        if (subgroup.sub_subgroups.length > 0) {
+          subgroup.sub_subgroups.forEach(ssg => {
+            const isSsgSelected = filterGroup?.level === 'sub_subgroup' && filterGroup.id === ssg.id;
+            html += `
+              <div class="tree-node leaf ${isSsgSelected ? 'selected' : ''}" data-level="sub_subgroup" data-id="${ssg.id}">
+                <span class="leaf-content" style="flex:1; padding:2px 4px; border-radius:4px;">
+                  ${window.AE.escapeHtml(ssg.name)} <span style="color:var(--text-muted);font-size:10px;">(${ssg.ledger_count})</span>
+                </span>
+                <div class="tree-actions">
+                  <button class="tree-btn btn-edit-ssg" data-id="${ssg.id}" data-name="${window.AE.escapeHtml(ssg.name)}" title="Edit">✏️</button>
+                  <button class="tree-btn btn-del-ssg" data-id="${ssg.id}" data-name="${window.AE.escapeHtml(ssg.name)}" title="Delete">🗑️</button>
+                </div>
               </div>
-            </div>
-          `;
-        });
+            `;
+          });
+        } else {
+          html += `<div style="font-size:10px;color:var(--text-muted);font-style:italic;padding:2px 4px;">No sub-subgroups</div>`;
+        }
         html += `</div></details>`;
       });
       html += `</div></details>`;
@@ -205,6 +219,56 @@
     panel.querySelectorAll('.btn-del-ssg').forEach(btn => btn.addEventListener('click', (e) => {
       e.stopPropagation(); deleteNode('sub_subgroup', btn.dataset.id, btn.dataset.name);
     }));
+
+    // Tooltip for subgroup hover
+    let sgTooltip = document.getElementById('sg-hover-tooltip');
+    if (!sgTooltip) {
+      sgTooltip = document.createElement('div');
+      sgTooltip.id = 'sg-hover-tooltip';
+      sgTooltip.className = 'sg-tooltip';
+      document.body.appendChild(sgTooltip);
+    }
+
+    panel.querySelectorAll('.tree-node[data-level="subgroup"]').forEach(node => {
+      node.addEventListener('mouseenter', (e) => {
+        const sgId = parseInt(node.dataset.id);
+        let sgNode = null;
+        for (const g of treeData) {
+          sgNode = g.subgroups.find(sg => sg.id === sgId);
+          if (sgNode) break;
+        }
+        if (!sgNode) return;
+
+        let tooltipHtml = `<div class="sg-tooltip-title">${window.AE.escapeHtml(sgNode.name)}</div>`;
+        if (sgNode.sub_subgroups.length > 0) {
+          sgNode.sub_subgroups.forEach(ssg => {
+            tooltipHtml += `<div class="sg-tooltip-item">• ${window.AE.escapeHtml(ssg.name)} (${ssg.ledger_count} ledgers)</div>`;
+          });
+        } else {
+          tooltipHtml += `<div class="sg-tooltip-empty">No sub-subgroups defined</div>`;
+        }
+
+        sgTooltip.innerHTML = tooltipHtml;
+        const rect = node.getBoundingClientRect();
+        sgTooltip.style.left = (rect.right + 8) + 'px';
+        sgTooltip.style.top = rect.top + 'px';
+        sgTooltip.classList.add('visible');
+      });
+
+      node.addEventListener('mouseleave', () => {
+        sgTooltip.classList.remove('visible');
+      });
+    });
+
+    // Update chevron rotation on details toggle
+    panel.querySelectorAll('details').forEach(det => {
+      det.addEventListener('toggle', () => {
+        const chevron = det.querySelector('.sg-chevron');
+        if (chevron) {
+          chevron.textContent = det.open ? '▼' : '▶';
+        }
+      });
+    });
   }
 
   function openCrudModal(type, action, data) {
@@ -364,9 +428,9 @@
               if (l.is_mapped) {
                 mappingHtml = `
                   <div class="pill-row">
-                    <span class="map-pill" title="Click to change group" data-action="unmap" data-id="${l.id}">${window.AE.escapeHtml(l.group_name)}</span> >
-                    <span class="map-pill" title="Click to change subgroup" data-action="unmap" data-id="${l.id}">${window.AE.escapeHtml(l.subgroup_name)}</span> >
-                    <span class="map-pill" title="Click to change sub-subgroup" data-action="unmap" data-id="${l.id}">${window.AE.escapeHtml(l.sub_subgroup_name)}</span>
+                    <span class="map-pill" title="Group" data-action="unmap" data-id="${l.id}">${window.AE.escapeHtml(l.group_name)}</span> >
+                    <span class="map-pill" title="Subgroup" data-action="unmap" data-id="${l.id}">${window.AE.escapeHtml(l.subgroup_name)}</span>${l.sub_subgroup_name ? ` >
+                    <span class="map-pill" title="Sub-subgroup" data-action="unmap" data-id="${l.id}">${window.AE.escapeHtml(l.sub_subgroup_name)}</span>` : ''}
                     <button class="btn-clear-map" data-action="unmap" data-id="${l.id}" title="Clear mapping">✕</button>
                     <span class="save-status" id="status-${l.id}" style="font-size:10px;color:var(--status-verified);opacity:0;transition:opacity 0.2s;">Saved ✓</span>
                   </div>
@@ -399,13 +463,15 @@
                   }
                 }
 
-                // Sub-subgroup selector
+                // Sub-subgroup selector — only if the selected subgroup HAS sub-subgroups
                 if (curSgId) {
                   const sgNode = treeData.find(g => g.id === curGId).subgroups.find(sg => sg.id === curSgId);
-                  html += `<select class="mapping-select sel-ssg" data-id="${l.id}">
-                    <option value="">Select Sub-subgroup...</option>
-                    ${sgNode.sub_subgroups.map(ssg => `<option value="${ssg.id}">${window.AE.escapeHtml(ssg.name)}</option>`).join('')}
-                  </select>`;
+                  if (sgNode.sub_subgroups.length > 0) {
+                    html += `<select class="mapping-select sel-ssg" data-id="${l.id}">
+                      <option value="">Select Sub-subgroup...</option>
+                      ${sgNode.sub_subgroups.map(ssg => `<option value="${ssg.id}">${window.AE.escapeHtml(ssg.name)}</option>`).join('')}
+                    </select>`;
+                  }
                 }
                 
                 html += `</div>`;
@@ -436,8 +502,17 @@
     
     panel.querySelectorAll('.sel-sg').forEach(sel => sel.addEventListener('change', (e) => {
       const lid = parseInt(sel.dataset.id);
+      const sgId = parseInt(sel.value);
       if(transientMapping[lid]) {
-         transientMapping[lid].subgroup_id = parseInt(sel.value);
+         transientMapping[lid].subgroup_id = sgId;
+         // If this subgroup has no sub-subgroups, save immediately at subgroup level
+         const gId = transientMapping[lid].group_id;
+         const gNode = treeData.find(g => g.id === gId);
+         const sgNode = gNode?.subgroups.find(sg => sg.id === sgId);
+         if (sgNode && sgNode.sub_subgroups.length === 0) {
+           saveMapping(lid, { subgroup_id: sgId });
+           return;
+         }
          renderLedgerPanel();
       }
     }));
@@ -445,7 +520,7 @@
     panel.querySelectorAll('.sel-ssg').forEach(sel => sel.addEventListener('change', (e) => {
       const lid = parseInt(sel.dataset.id);
       const ssgId = parseInt(sel.value);
-      if (ssgId) saveIndividualMapping(lid, ssgId);
+      if (ssgId) saveMapping(lid, { sub_subgroup_id: ssgId });
     }));
 
     // Reset actions on pills
@@ -463,7 +538,7 @@
 
     panel.querySelectorAll('[data-action="unmap"]').forEach(btn => btn.addEventListener('click', (e) => {
       const lid = parseInt(btn.dataset.id);
-      saveIndividualMapping(lid, null);
+      saveMapping(lid, {});
     }));
 
     // Checkboxes
@@ -502,20 +577,29 @@
     }
   }
 
-  async function saveIndividualMapping(ledgerId, subSubgroupId) {
+  async function saveMapping(ledgerId, { sub_subgroup_id, subgroup_id } = {}) {
     try {
+      const body = {};
+      if (sub_subgroup_id) {
+        body.sub_subgroup_id = sub_subgroup_id;
+      } else if (subgroup_id) {
+        body.subgroup_id = subgroup_id;
+      } else {
+        body.sub_subgroup_id = null;
+      }
+
       const res = await window.AE.apiFetch(`/api/audit/${engagementId}/ledgers/${ledgerId}/map`, {
         method: 'PATCH',
-        body: JSON.stringify({ sub_subgroup_id: subSubgroupId })
+        body: JSON.stringify(body)
       });
 
       if (res.ok) {
         const updatedLedger = await res.json();
         const index = ledgers.findIndex(l => l.id === ledgerId);
         if (index !== -1) {
-          ledgers[index] = updatedLedger; // Replace the whole ledger object to get fresh names
+          ledgers[index] = updatedLedger;
         }
-        delete transientMapping[ledgerId]; // clear transient state
+        delete transientMapping[ledgerId];
         updateProgressBar();
         renderLedgerPanel();
         
@@ -574,6 +658,7 @@
       selSg.innerHTML = '<option value="">Select Subgroup...</option>';
       selSsg.innerHTML = '<option value="">Select Sub-subgroup...</option>';
       selSsg.disabled = true;
+      selSsg.style.display = '';
       btnApply.disabled = true;
 
       const gId = parseInt(selG.value);
@@ -592,12 +677,20 @@
 
       const sgId = parseInt(selSg.value);
       if (sgId) {
-        selSsg.disabled = false;
         const gNode = treeData.find(g => g.id === parseInt(selG.value));
         const sgNode = gNode.subgroups.find(s => s.id === sgId);
-        selSsg.innerHTML += sgNode.sub_subgroups.map(ssg => `<option value="${ssg.id}">${window.AE.escapeHtml(ssg.name)}</option>`).join('');
+        if (sgNode.sub_subgroups.length > 0) {
+          selSsg.disabled = false;
+          selSsg.style.display = '';
+          selSsg.innerHTML += sgNode.sub_subgroups.map(ssg => `<option value="${ssg.id}">${window.AE.escapeHtml(ssg.name)}</option>`).join('');
+        } else {
+          selSsg.disabled = true;
+          selSsg.style.display = 'none';
+          btnApply.disabled = false;
+        }
       } else {
         selSsg.disabled = true;
+        selSsg.style.display = '';
       }
     });
 
@@ -608,15 +701,17 @@
     modal.querySelector('#btn-bulk-cancel').addEventListener('click', () => modal.style.display = 'none');
     btnApply.addEventListener('click', async () => {
       const ssgId = parseInt(selSsg.value);
-      if (!ssgId) return;
+      const sgId = parseInt(selSg.value);
+      if (!ssgId && !sgId) return;
 
       try {
+        const bodyPayload = ssgId
+          ? { ledger_ids: Array.from(selectedLedgerIds), sub_subgroup_id: ssgId }
+          : { ledger_ids: Array.from(selectedLedgerIds), subgroup_id: sgId };
+
         const res = await window.AE.apiFetch(`/api/audit/${engagementId}/ledgers/bulk-map`, {
           method: 'POST',
-          body: JSON.stringify({
-            ledger_ids: Array.from(selectedLedgerIds),
-            sub_subgroup_id: ssgId
-          })
+          body: JSON.stringify(bodyPayload)
         });
 
         if (res.ok) {
@@ -703,22 +798,28 @@
           
           if (!sgNode) continue;
 
-          // Find/Create sub-subgroup
-          let ssgNode = sgNode.sub_subgroups.find(ssg => ssg.name === path.sub_subgroup_name);
-          if (!ssgNode) {
-            const ssgRes = await window.AE.apiFetch(`/api/audit/${engagementId}/sub-subgroups`, {
-              method: 'POST', body: JSON.stringify({ subgroup_id: sgNode.id, name: path.sub_subgroup_name })
-            });
-            if (ssgRes.ok) {
-              const ssgData = await ssgRes.json();
-              ssgNode = { id: ssgData.id, name: ssgData.name };
-              sgNode.sub_subgroups.push(ssgNode);
+          if (path.sub_subgroup_name) {
+            // Find/Create sub-subgroup
+            let ssgNode = sgNode.sub_subgroups.find(ssg => ssg.name === path.sub_subgroup_name);
+            if (!ssgNode) {
+              const ssgRes = await window.AE.apiFetch(`/api/audit/${engagementId}/sub-subgroups`, {
+                method: 'POST', body: JSON.stringify({ subgroup_id: sgNode.id, name: path.sub_subgroup_name })
+              });
+              if (ssgRes.ok) {
+                const ssgData = await ssgRes.json();
+                ssgNode = { id: ssgData.id, name: ssgData.name };
+                sgNode.sub_subgroups.push(ssgNode);
+              }
             }
-          }
 
-          if (ssgNode) {
-             ledgerToSSGNameMap[cl.id] = ssgNode.id;
-             matchedCount++;
+            if (ssgNode) {
+               ledgerToSSGNameMap[cl.id] = { sub_subgroup_id: ssgNode.id };
+               matchedCount++;
+            }
+          } else {
+            // Mapped directly to subgroup (no sub-subgroup)
+            ledgerToSSGNameMap[cl.id] = { subgroup_id: sgNode.id };
+            matchedCount++;
           }
         }
       }
@@ -728,21 +829,42 @@
         return;
       }
 
-      // Collect by ssgId for bulk mapping
-      const bulkMaps = {};
-      for (const [lidStr, ssgId] of Object.entries(ledgerToSSGNameMap)) {
-         bulkMaps[ssgId] = bulkMaps[ssgId] || [];
-         bulkMaps[ssgId].push(parseInt(lidStr));
+      // Collect by mapping target for bulk mapping
+      const bulkBySSG = {};
+      const bulkBySG = {};
+      for (const [lidStr, mapping] of Object.entries(ledgerToSSGNameMap)) {
+        if (mapping.sub_subgroup_id) {
+          const key = mapping.sub_subgroup_id;
+          bulkBySSG[key] = bulkBySSG[key] || [];
+          bulkBySSG[key].push(parseInt(lidStr));
+        } else if (mapping.subgroup_id) {
+          const key = mapping.subgroup_id;
+          bulkBySG[key] = bulkBySG[key] || [];
+          bulkBySG[key].push(parseInt(lidStr));
+        }
       }
 
       // Execute bulk mapping queries
       let updatedTotal = 0;
-      for (const leafId in bulkMaps) {
+      for (const leafId in bulkBySSG) {
         const res = await window.AE.apiFetch(`/api/audit/${engagementId}/ledgers/bulk-map`, {
           method: 'POST',
           body: JSON.stringify({
-            ledger_ids: bulkMaps[leafId],
+            ledger_ids: bulkBySSG[leafId],
             sub_subgroup_id: parseInt(leafId)
+          })
+        });
+        if (res.ok) {
+          const resData = await res.json();
+          updatedTotal += resData.updated || 0;
+        }
+      }
+      for (const sgId in bulkBySG) {
+        const res = await window.AE.apiFetch(`/api/audit/${engagementId}/ledgers/bulk-map`, {
+          method: 'POST',
+          body: JSON.stringify({
+            ledger_ids: bulkBySG[sgId],
+            subgroup_id: parseInt(sgId)
           })
         });
         if (res.ok) {

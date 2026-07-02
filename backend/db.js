@@ -346,6 +346,17 @@ function migrateLedgerCodeNameNullable() {
 }
 migrateLedgerCodeNameNullable();
 
+function migrateAddSubgroupIdToLedgers() {
+  const tableInfo = db.pragma('table_info(trial_balance_ledgers)');
+  const hasCol = tableInfo.some(col => col.name === 'subgroup_id');
+  if (!hasCol) {
+    console.log('[Migration] Adding subgroup_id column to trial_balance_ledgers...');
+    db.exec(`ALTER TABLE trial_balance_ledgers ADD COLUMN subgroup_id INTEGER REFERENCES subgroups(id)`);
+    console.log('[Migration] subgroup_id column added.');
+  }
+}
+migrateAddSubgroupIdToLedgers();
+
 function seedDefaultGroupsForEngagement(engagementId) {
   const GROUP_NAMES = ['Income', 'Expenditure', 'Asset', 'Liability', 'Equity'];
   const SUBGROUP_NAMES = ['A', 'B', 'C', 'D', 'E', 'F'];
